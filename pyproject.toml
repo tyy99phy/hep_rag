@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hep-rag-v2"
+version = "0.2.0"
+description = "Config-driven HEP literature graph and retrieval framework"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "PyYAML>=6.0",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+embeddings = [
+  "sentence-transformers>=3.0",
+]
+local-llm = [
+  "transformers>=4.40",
+]
+vectorstore = [
+  "chromadb>=0.5",
+]
+
+[project.scripts]
+hepv2 = "hep_rag_v2.cli:main"
+hep-rag = "hep_rag_v2.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,50 @@
+flowchart TD
+    subgraph A["1. 数据输入"]
+        A1["历史论文元数据<br/>old hep.db / INSPIRE id"]
+        A2["结构化 PDF 解析<br/>MinerU 输出"]
+    end
+
+    subgraph B["2. 论文图谱层"]
+        B1["Work"]
+        B2["Author / Collaboration / Venue / Topic"]
+        B3["References / Citations"]
+        B4["Paper graph<br/>citation / bibliographic coupling / co-citation"]
+    end
+
+    subgraph C["3. 全文证据层"]
+        C1["Document"]
+        C2["Section / Block"]
+        C3["Formula / Figure / Table"]
+        C4["Retrieval chunks<br/>abstract / section / formula window / asset window"]
+        C5["Audit gate<br/>cleanliness / readiness"]
+    end
+
+    subgraph D["4. 检索与输出"]
+        D1["Paper search"]
+        D2["Evidence search"]
+        D3["Graph expansion"]
+        D4["Outputs<br/>paper organization<br/>survey drafting support<br/>idea extraction<br/>evidence-grounded answers"]
+    end
+
+    A1 --> B1
+    A1 --> B2
+    A1 --> B3
+    B1 --> B4
+    B2 --> B4
+    B3 --> B4
+
+    A2 --> C1
+    C1 --> C2
+    C2 --> C3
+    C2 --> C4
+    C4 --> C5
+
+    B1 -. "full text attached to paper" .-> C1
+
+    B4 --> D1
+    B4 --> D3
+    C5 --> D2
+
+    D1 --> D4
+    D2 --> D4
+    D3 --> D4

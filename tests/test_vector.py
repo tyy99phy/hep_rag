@@ -1,0 +1,263 @@
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from hep_rag_v2 import cli, db, paths
+from hep_rag_v2.fulltext import import_mineru_source, materialize_mineru_document
+from hep_rag_v2.graph import graph_neighbors, rebuild_graph_edges
+from hep_rag_v2.metadata import upsert_collection, upsert_work_from_hit
+from hep_rag_v2.query import build_match_queries, rewrite_query_for_embedding
+from hep_rag_v2.search import rebuild_search_indices
+from hep_rag_v2.vector import (
+    HASH_IDF_VECTOR_MODEL,
+    rebuild_vector_indices,
+    route_query,
+    search_chunks_vector,
+    search_works_vector,
+)
+
+
+class TestVectorSearch(unittest.TestCase):
+    def test_query_rewrite_and_match_queries_strip_intent_words(self) -> None:
+        rewritten = rewrite_query_for_embedding("综述一下 H -> aa 相关工作")
+        self.assertIn("higgs", rewritten)
+        self.assertIn("pseudoscalar", rewritten)
+        self.assertNotIn("综述", rewritten)
+        self.assertNotIn("相关工作", rewritten)
+
+        queries = build_match_queries("综述一下 H -> aa 相关工作")
+        self.assertGreaterEqual(len(queries), 1)
+        self.assertIn('"higgs"', queries[0])
+        self.assertIn('"pseudoscalar"', queries[0])
+        self.assertNotIn("综述", " ".join(queries))
+
+    def test_build_vector_index_and_search_works_and_chunks(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            with _patch_workspace(tmp):
+                db.ensure_db()
+                with db.connect() as conn:
+                    collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
+                    rare_hit = {
+                        "metadata": {
+                            "control_number": 801,
+                            "titles": [{"title": "Observation of the rare decay of the eta meson to four muons"}],
+                            "abstracts": [{"value": "A rare decay search with four muons and 101 inverse femtobarns."}],
+                            "arxiv_eprints": [{"value": "2601.00001"}],
+                            "keywords": [{"value": "rare decay"}],
+                        }
+                    }
+                    higgs_hit = {
+                        "metadata": {
+                            "control_number": 802,
+                            "titles": [{"title": "Search for an exotic Higgs boson decay"}],
+                            "abstracts": [{"value": "We study an exotic Higgs final state with photons."}],
+                            "arxiv_eprints": [{"value": "2601.00002"}],
+                            "keywords": [{"value": "Higgs"}],
+                        }
+                    }
+                    upsert_work_from_hit(conn, collection_id=collection_id, hit=rare_hit)
+                    upsert_work_from_hit(conn, collection_id=collection_id, hit=higgs_hit)
+                    work_id = int(
+                        conn.execute(
+                            "SELECT work_id FROM works WHERE canonical_id = '801'"
+                        ).fetchone()[0]
+                    )
+
+                    bundle_dir = tmp / "bundle_vector"
+                    bundle_dir.mkdir()
+                    (bundle_dir / "paper_full.md").write_text("# Rare decay note\n", encoding="utf-8")
+                    (bundle_dir / "paper_content_list.json").write_text(
+                        json.dumps(
+                            [
+                                {"type": "text", "text_level": 1, "text": "Rare decay note", "page_idx": 1},
+                                {"type": "text", "text_level": 1, "text": "Abstract", "page_idx": 1},
+                                {"type": "text", "text": "A rare decay search with a profile likelihood analysis.", "page_idx": 1},
+                                {"type": "text", "text_level": 1, "text": "1 Method", "page_idx": 2},
+                                {"type": "text", "text": "We fit the signal model with profile likelihood templates and detector efficiency terms.", "page_idx": 2},
+                                {"type": "text", "text_level": 1, "text": "References", "page_idx": 3},
+                                {"type": "text", "text": "[1] Bibliography entry.", "page_idx": 3},
+                            ],
+                            ensure_ascii=False,
+                        ),
+                        encoding="utf-8",
+                    )
+                    dest_dir = paths.PARSED_DIR / "cms_rare_decay" / "2601.00001"
+                    import_mineru_source(source_path=bundle_dir, dest_dir=dest_dir)
+                    materialize_mineru_document(conn, work_id=work_id, manifest_path=dest_dir / "manifest.json")
+
+                    summary = rebuild_vector_indices(conn, target="all")
+                    conn.commit()
+
+                    self.assertEqual(summary["works"], 2)
+                    self.assertGreaterEqual(summary["chunks"], 2)
+
+                    work_results = search_works_vector(conn, query="rare decay four muons", limit=5)
+                    self.assertGreaterEqual(len(work_results), 1)
+                    self.assertEqual(work_results[0]["canonical_id"], "801")
+
+                    chunk_results = search_chunks_vector(conn, query="profile likelihood detector efficiency", limit=5)
+                    self.assertGreaterEqual(len(chunk_results), 1)
+                    self.assertIn("profile likelihood", chunk_results[0]["clean_text"].lower())
+                    self.assertNotIn("bibliography entry", chunk_results[0]["clean_text"].lower())
+
+    def test_hash_idf_vector_model_handles_natural_language_query_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            with _patch_workspace(tmp):
+                db.ensure_db()
+                with db.connect() as conn:
+                    collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
+                    for control_number, title, abstract in [
+                        (801, "Observation of the rare decay of the eta meson to four muons", "A rare decay search with four muons."),
+                        (802, "Search for an exotic Higgs boson decay", "We study an exotic Higgs final state with photons."),
+                    ]:
+                        hit = {
+                            "metadata": {
+                                "control_number": control_number,
+                                "titles": [{"title": title}],
+                                "abstracts": [{"value": abstract}],
+                            }
+                        }
+                        upsert_work_from_hit(conn, collection_id=collection_id, hit=hit)
+
+                    rebuild_vector_indices(conn, target="works", model=HASH_IDF_VECTOR_MODEL)
+                    conn.commit()
+
+                    results = search_works_vector(
+                        conn,
+                        query="综述一下 rare decay four muons 相关工作",
+                        limit=5,
+                        model=HASH_IDF_VECTOR_MODEL,
+                    )
+                    self.assertGreaterEqual(len(results), 1)
+                    self.assertEqual(results[0]["canonical_id"], "801")
+
+    def test_cli_search_hybrid_auto_routes_broad_queries_to_work_level(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            with _patch_workspace(tmp):
+                db.ensure_db()
+                with db.connect() as conn:
+                    collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
+                    shared_refs = [{"control_number": 901}, {"control_number": 902}]
+                    for control_number, title, abstract in [
+                        (701, "Search for exotic Higgs boson decays to four photons", "A broad Higgs exotic decay analysis."),
+                        (702, "Search for exotic Higgs boson decays to two muons and two b quarks", "A related exotic Higgs decay analysis."),
+                        (901, "Reference one", "Foundational method paper."),
+                        (902, "Reference two", "Foundational detector paper."),
+                    ]:
+                        hit = {
+                            "metadata": {
+                                "control_number": control_number,
+                                "titles": [{"title": title}],
+                                "abstracts": [{"value": abstract}],
+                                "references": shared_refs if control_number in {701, 702} else [],
+                            }
+                        }
+                        upsert_work_from_hit(conn, collection_id=collection_id, hit=hit)
+
+                    rebuild_search_indices(conn, target="works")
+                    rebuild_vector_indices(conn, target="works")
+                    rebuild_graph_edges(conn, target="bibliographic-coupling", collection="cms_rare_decay", min_shared=2)
+                    conn.commit()
+
+                self.assertEqual(route_query("综述一下 exotic Higgs decays 的相关工作")["target"], "works")
+
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    cli.cmd_search_hybrid(
+                        SimpleNamespace(
+                            query="综述一下 exotic Higgs decays 的相关工作",
+                            target="auto",
+                            collection="cms_rare_decay",
+                            limit=5,
+                            model="hash-v1",
+                            graph_expand=None,
+                            seed_limit=5,
+                        )
+                    )
+                payload = json.loads(out.getvalue())
+                self.assertEqual(payload["routing"]["target"], "works")
+                self.assertEqual(payload["routing"]["graph_expand"], 5)
+                self.assertGreaterEqual(len(payload["results"]), 1)
+                self.assertIn(payload["results"][0]["canonical_id"], {"701", "702"})
+
+    def test_similarity_graph_builds_neighbors_from_work_embeddings(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            with _patch_workspace(tmp):
+                db.ensure_db()
+                with db.connect() as conn:
+                    collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
+                    for control_number, title, abstract in [
+                        (811, "Observation of the rare decay to four muons", "A rare decay search with four muons."),
+                        (812, "Measurement of a rare decay with four muons", "Rare decay study with muons and signal extraction."),
+                        (813, "Search for top quark flavor changing interactions", "A top quark Higgs analysis with diphotons."),
+                    ]:
+                        hit = {
+                            "metadata": {
+                                "control_number": control_number,
+                                "titles": [{"title": title}],
+                                "abstracts": [{"value": abstract}],
+                            }
+                        }
+                        upsert_work_from_hit(conn, collection_id=collection_id, hit=hit)
+
+                    rebuild_vector_indices(conn, target="works", model=HASH_IDF_VECTOR_MODEL)
+                    rebuild_graph_edges(
+                        conn,
+                        target="similarity",
+                        collection="cms_rare_decay",
+                        similarity_model=HASH_IDF_VECTOR_MODEL,
+                        similarity_top_k=2,
+                        similarity_min_score=0.2,
+                    )
+                    conn.commit()
+
+                    work_id = int(
+                        conn.execute(
+                            "SELECT work_id FROM works WHERE canonical_id = '811'"
+                        ).fetchone()[0]
+                    )
+                    neighbors = graph_neighbors(
+                        conn,
+                        work_id=work_id,
+                        edge_kind="similarity",
+                        collection="cms_rare_decay",
+                        limit=5,
+                    )
+                    self.assertGreaterEqual(len(neighbors), 1)
+                    self.assertEqual(neighbors[0]["canonical_id"], "812")
+                    self.assertEqual(neighbors[0]["edge_kind"], "similarity")
+
+
+@contextlib.contextmanager
+def _patch_workspace(tmp: Path):
+    schema_path = ROOT / "db" / "schema.sql"
+    with mock.patch.object(paths, "WORKDIR", tmp), \
+         mock.patch.object(paths, "DB_DIR", tmp / "db"), \
+         mock.patch.object(paths, "DB_PATH", tmp / "db" / "hep_rag_v2.db"), \
+         mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
+         mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
+         mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
+         mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
+         mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
+         mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
+         mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
+         mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
+         mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+        yield

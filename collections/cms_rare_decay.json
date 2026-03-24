@@ -1,0 +1,36 @@
+{
+  "name": "cms_rare_decay",
+  "label": "CMS rare decays",
+  "notes": "Metadata-graph pilot collection for CMS rare-decay literature. v2 starts from metadata, abstracts, and references.",
+  "source_priority": ["inspirehep", "arxiv"],
+  "filters": {
+    "collaboration": "CMS",
+    "collection": "published",
+    "primary_categories": ["hep-ex"],
+    "target_size": 1000
+  },
+  "queries": {
+    "inspire": [
+      "collaboration:\"CMS\" and collection:published and (keywords:\"rare decay\" or titles:\"rare decay\" or abstracts:\"rare decay\" or abstracts:\"flavor-changing neutral current\" or abstracts:\"FCNC\" or abstracts:\"B_s\" or abstracts:\"B0\" or abstracts:\"tau\" or abstracts:\"lepton flavor violation\" or abstracts:\"LFV\")",
+      "collaboration:\"CMS\" and (titles:\"B_s\" or abstracts:\"B_s\" or titles:\"B0\" or abstracts:\"B0\" or titles:\"tau to\" or abstracts:\"tau to\" or titles:\"mu mu\" or abstracts:\"mu mu\")"
+    ]
+  },
+  "fields": [
+    "control_number",
+    "titles",
+    "abstracts",
+    "authors",
+    "collaborations",
+    "publication_info",
+    "arxiv_eprints",
+    "dois",
+    "citation_count",
+    "references",
+    "keywords",
+    "inspire_categories",
+    "documents",
+    "accelerator_experiments",
+    "preprint_date",
+    "earliest_date"
+  ]
+}

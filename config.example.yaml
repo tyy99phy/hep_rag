@@ -1,0 +1,86 @@
+workspace:
+  root: ./workspace
+
+collection:
+  name: default
+  label: Default HEP collection
+  notes: Online-ingested HEP literature graph
+
+online:
+  provider: inspirehep
+  published_only: true
+  query_suffix: ""
+  page_size: 25
+  timeout_sec: 60
+  retries: 3
+  sleep_sec: 0.2
+  fields:
+    - titles
+    - abstracts
+    - arxiv_eprints
+    - authors
+    - citation_count
+    - collaborations
+    - control_number
+    - dois
+    - documents
+    - earliest_date
+    - files
+    - keywords
+    - preprint_date
+    - publication_info
+
+download:
+  timeout_sec: 120
+  retries: 3
+  verify_ssl: true
+
+mineru:
+  enabled: false
+  api_base: https://mineru.net/api/v4
+  api_token: ""
+  model_version: pipeline
+  is_ocr: false
+  enable_formula: true
+  enable_table: true
+  language: en
+  poll_interval_sec: 10
+  max_wait_sec: 1800
+  timeout_sec: 120
+
+embedding:
+  model: hash-idf-v1
+  dim: 768
+  build_after_ingest: true
+  chroma:
+    enabled: false
+    dir: null
+
+ingest:
+  chunk_size: 2400
+  overlap_blocks: 1
+  section_parent_char_limit: 12000
+
+retrieval:
+  target: auto
+  limit: 8
+  graph_expand: null
+  seed_limit: 5
+  chunk_limit: 12
+  answer_evidence_limit: 6
+
+llm:
+  enabled: false
+  backend: openai_compatible
+  api_base: http://127.0.0.1:8000/v1
+  api_key: EMPTY
+  model: Qwen/Qwen3-32B
+  chat_path: /chat/completions
+  temperature: 0.2
+  max_tokens: 1200
+  timeout_sec: 120
+  extra_headers: {}
+  local_model_path: ""
+  device: cpu
+  torch_dtype: auto
+  trust_remote_code: false
