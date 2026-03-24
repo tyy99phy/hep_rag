@@ -440,7 +440,12 @@ def _download_hit_pdf(
             "source": "cached",
         }
 
-    candidates = list_pdf_candidates(hit)
+    candidates = list_pdf_candidates(
+        hit,
+        resolve_arxiv_from_doi=True,
+        timeout=max(10, min(timeout, 30)),
+        retries=max(1, min(retries, 3)),
+    )
     result = download_pdf_candidates(
         candidates,
         output_path=output_path,

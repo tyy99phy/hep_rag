@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -87,7 +88,13 @@ def summarize_hit(hit: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def list_pdf_candidates(hit: dict[str, Any]) -> list[dict[str, str]]:
+def list_pdf_candidates(
+    hit: dict[str, Any],
+    *,
+    resolve_arxiv_from_doi: bool = False,
+    timeout: int = 10,
+    retries: int = 3,
+) -> list[dict[str, str]]:
     metadata = hit.get("metadata") or hit
     candidates: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -114,14 +121,49 @@ def list_pdf_candidates(hit: dict[str, Any]) -> list[dict[str, str]]:
             add(url, "files")
 
     arxiv_id = first_arxiv_id(metadata)
+    doi = first_doi(metadata)
+    if not arxiv_id and doi and resolve_arxiv_from_doi:
+        arxiv_id = doi_to_arxiv(doi, timeout=timeout, retries=retries)
     if arxiv_id:
         add(f"https://arxiv.org/pdf/{arxiv_id}.pdf", "arxiv")
 
-    doi = first_doi(metadata)
     if doi:
         add(f"https://doi.org/{doi}", "doi")
 
     return candidates
+
+
+def doi_to_arxiv(
+    doi: str,
+    *,
+    timeout: int = 10,
+    retries: int = 3,
+) -> str | None:
+    value = str(doi or "").strip()
+    if not value:
+        return None
+
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            response = requests.get(
+                "http://export.arxiv.org/api/query",
+                params={"search_query": f"doi:{value}"},
+                headers={"User-Agent": "hep-rag-v2/0.2 (+doi-to-arxiv)"},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            root = ET.fromstring(response.text)
+            ns = {"atom": "http://www.w3.org/2005/Atom"}
+            entry = root.find("atom:entry", ns)
+            if entry is None:
+                return None
+            node = entry.find("atom:id", ns)
+            if node is None or not node.text:
+                return None
+            return node.text.rsplit("/", 1)[-1].strip() or None
+        except Exception:
+            time.sleep(min(0.5 * attempt, 2.0))
+    return None
 
 
 def download_pdf_candidates(

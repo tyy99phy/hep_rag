@@ -10,6 +10,7 @@ docs/__pycache__/
 tests/__pycache__/
 
 workspace/
+collections/
 db/*.db
 db/*.sqlite
 data/

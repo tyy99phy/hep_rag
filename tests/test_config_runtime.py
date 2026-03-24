@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from hep_rag_v2 import paths
 from hep_rag_v2.config import apply_runtime_config, runtime_collection_config
@@ -72,6 +73,18 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(candidates[1]["url"], "https://example.org/backup.pdf")
         self.assertEqual(candidates[2]["url"], "https://arxiv.org/pdf/2501.01234.pdf")
         self.assertEqual(candidates[3]["url"], "https://doi.org/10.1000/example")
+
+    def test_list_pdf_candidates_can_fallback_from_doi_to_arxiv(self) -> None:
+        hit = {
+            "metadata": {
+                "dois": [{"value": "10.1000/example"}],
+            }
+        }
+        with mock.patch("hep_rag_v2.providers.inspire.doi_to_arxiv", return_value="1711.04330v2") as patched:
+            candidates = list_pdf_candidates(hit, resolve_arxiv_from_doi=True)
+        patched.assert_called_once_with("10.1000/example", timeout=10, retries=3)
+        self.assertEqual(candidates[0]["url"], "https://arxiv.org/pdf/1711.04330v2.pdf")
+        self.assertEqual(candidates[1]["url"], "https://doi.org/10.1000/example")
 
     def test_local_transformers_client_requires_model_path(self) -> None:
         with self.assertRaises(ValueError):
