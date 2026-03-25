@@ -1,121 +1,207 @@
-# hep_rag
+# hep\_rag\_v2
 
-这个仓库提供一条标准流程：在线检索 HEP 论文，下载 PDF，调用 MinerU 解析，建立检索库，然后做查询和问答。
+配置驱动的高能物理文献图谱与检索框架。从 InspireHEP 在线检索论文元数据，下载 PDF 并解析全文，构建引用图谱和向量索引，支持 BM25 / 向量 / 混合检索与 LLM 问答。
 
-## 1. 安装
+## 架构
+
+```
+InspireHEP API
+    │
+    ▼
+元数据入库 (works, citations, authors, topics)
+    │
+    ▼
+PDF 下载 (并行 ThreadPoolExecutor)
+    │
+    ▼
+MinerU 全文解析 → sections → blocks → chunks
+    │
+    ├── BM25 全文索引 (works / chunks / formulas / assets)
+    ├── 向量索引 (hash-idf-v1 / sentence-transformers)
+    └── 图结构边 (引文、书目耦合、共被引、向量相似度)
+            │
+            ▼
+        混合检索 + LLM 问答
+```
+
+## 安装
 
 ```bash
 git clone https://github.com/tyy99phy/hep_rag.git
 cd hep_rag
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -U pip
-python3 -m pip install -e .
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+
+# 可选：本地嵌入模型
+pip install -e ".[embeddings]"
+
+# 可选：本地 LLM 推理
+pip install -e ".[local-llm]"
+
+# 可选：Chroma 向量数据库
+pip install -e ".[vectorstore]"
 ```
 
-## 2. 初始化配置和工作区
+## 快速开始
 
 ```bash
+# 1. 初始化配置和工作区
 hep-rag init-config --config ./hep-rag.yaml --workspace ./workspace
+
+# 2. 编辑 hep-rag.yaml，填入 MinerU / LLM 凭证（见下方"配置"一节）
+
+# 3. 预览检索结果
+hep-rag fetch-papers "rare decay eta to four muons CMS" \
+  --config ./hep-rag.yaml --limit 5
+
+# 4. 一键入库（元数据 + PDF 下载 + MinerU 解析 + 索引 + 图谱）
+hep-rag ingest-online "rare decay eta to four muons CMS" \
+  --config ./hep-rag.yaml --limit 10 --download-limit 10 --parse-limit 10
+
+# 5. 检索（不调用 LLM）
+hep-rag query "eta meson rare decay branching fraction" \
+  --config ./hep-rag.yaml --limit 8
+
+# 6. 问答（检索 + LLM 生成）
+hep-rag ask "总结 eta -> 4mu 的最新实验结果" \
+  --config ./hep-rag.yaml --mode survey
 ```
 
-这一步会生成：
+## 配置
 
-- `hep-rag.yaml`
-- `./workspace/`
-
-## 3. 修改配置
-
-打开 `hep-rag.yaml`，只先改下面这几项，其他保持默认：
+`hep-rag init-config` 会生成默认配置文件，关键字段：
 
 ```yaml
 mineru:
-  enabled: true
-  api_token: "你的 MinerU token"
+  enabled: true                      # 开启全文解析
+  api_base: https://mineru.net/api/v4
+  api_token: "你的 token"
+
+embedding:
+  model: hash-idf-v1                 # 内置无依赖模型，或填 sentence-transformers 模型名
 
 llm:
   enabled: true
-  backend: openai_compatible
-  api_base: "你的 OpenAI 兼容接口，例如 https://your-endpoint/v1"
-  api_key: "你的 API key"
-  model: "你要调用的模型名"
+  backend: openai_compatible         # 或 local_transformers
+  api_base: "http://127.0.0.1:8000/v1"
+  api_key: "你的 key"
+  model: "Qwen/Qwen3-32B"
 ```
 
-## 4. 先搜索候选论文
+完整字段说明见 [`config.example.yaml`](config.example.yaml)。
+
+## CLI 命令一览
+
+| 命令 | 说明 |
+|------|------|
+| `init-config` | 生成默认配置文件和工作区目录 |
+| `init` | 初始化数据库 |
+| `fetch-papers` | 在线搜索 InspireHEP，预览候选论文 |
+| `ingest-online` | 搜索 + 下载 + 解析 + 建索引（全流程） |
+| `ingest-metadata` | 仅导入元数据（不下载 PDF） |
+| `import-mineru` | 手动导入 MinerU 解析结果 |
+| `enrich-inspire-metadata` | 补全引文、摘要等字段 |
+| `build-search-index` | 重建 BM25 全文索引 |
+| `build-vector-index` | 重建向量索引 |
+| `build-graph` | 重建图结构边 |
+| `search-bm25` | BM25 关键词检索 |
+| `search-vector` | 向量语义检索 |
+| `search-hybrid` | 混合检索（自动路由 work/chunk 级别） |
+| `query` | 检索证据（不调用 LLM） |
+| `ask` | 检索 + LLM 问答 |
+| `show-document` | 查看论文解析结果 |
+| `audit-document` | 审查解析质量 |
+| `show-graph` | 查看图谱邻居 |
+| `status` | 工作区统计 |
+| `collections` | 列出所有 collection |
+| `bootstrap-legacy-corpus` | 从旧版数据库迁移 |
+
+每个命令加 `--help` 查看详细参数。
+
+## 项目结构
+
+```
+hep_rag/
+├── pyproject.toml
+├── config.example.yaml          # 完整配置模板
+├── db/schema.sql                # SQLite schema（参考副本）
+│
+├── src/hep_rag_v2/
+│   ├── schema.sql               # 打包在内的 schema
+│   ├── config.py                # 配置加载与合并
+│   ├── paths.py                 # 工作区路径管理 (WorkspacePaths)
+│   ├── db.py                    # SQLite 连接与初始化
+│   ├── metadata.py              # InspireHEP 元数据入库
+│   ├── pipeline.py              # 高级工作流（ingest / retrieve / ask）
+│   ├── graph.py                 # 图结构边构建
+│   ├── query.py                 # 查询改写
+│   ├── records.py               # 数据记录类型
+│   ├── textnorm.py              # 文本归一化 (CJK 分词、LaTeX 清洗)
+│   │
+│   ├── fulltext/                # 全文处理
+│   │   ├── parser.py            #   MinerU 输出导入
+│   │   ├── document.py          #   文档结构化 (sections → blocks)
+│   │   └── chunks.py            #   分块 (chunking)
+│   │
+│   ├── vector/                  # 向量检索
+│   │   ├── embedding.py         #   嵌入模型 (hash-idf / sentence-transformers)
+│   │   ├── index.py             #   索引构建
+│   │   ├── search.py            #   向量 / 混合检索
+│   │   └── chroma.py            #   Chroma 向量数据库集成
+│   │
+│   ├── cli/                     # 命令行接口
+│   │   ├── _common.py           #   共享工具函数
+│   │   ├── _parser.py           #   argparse 定义
+│   │   ├── workspace.py         #   工作区管理命令
+│   │   ├── ingest.py            #   数据入库命令
+│   │   ├── search.py            #   检索命令
+│   │   └── inspect.py           #   审查 / 展示命令
+│   │
+│   └── providers/               # 外部服务适配
+│       ├── inspire.py           #   InspireHEP API
+│       ├── mineru_api.py        #   MinerU 解析 API
+│       ├── openai_compatible.py #   OpenAI 兼容 LLM
+│       └── local_transformers.py#   本地 HuggingFace 模型
+│
+└── tests/
+    ├── conftest.py              # pytest fixtures
+    ├── test_bootstrap.py        # 入库 / 解析 / 索引 / 图谱集成测试
+    ├── test_config_runtime.py   # 配置加载测试
+    └── test_vector.py           # 向量检索 / 混合路由测试
+```
+
+## 数据库
+
+SQLite 数据库（`workspace/db/hep_rag_v2.db`），WAL 模式，28 张表：
+
+- **元数据**: works, work\_ids, authors, collaborations, venues, topics
+- **引文网络**: citations, collection\_works
+- **全文**: documents, document\_sections, blocks, formulas, assets, chunks
+- **图结构**: similarity\_edges, bibliographic\_coupling\_edges, co\_citation\_edges
+- **嵌入**: work\_embeddings, chunk\_embeddings
+- **运行记录**: collections, ingest\_runs, graph\_build\_runs
+
+## 工作区目录
+
+```
+workspace/
+├── db/hep_rag_v2.db       # 主数据库
+├── collections/            # collection 配置 JSON
+├── data/
+│   ├── raw/inspire/        # InspireHEP 原始响应
+│   ├── pdfs/               # 下载的 PDF
+│   └── parsed/             # MinerU 解析结果
+├── indexes/                # BM25 + 向量索引
+└── exports/                # 导出文件
+```
+
+## 运行测试
 
 ```bash
-hep-rag fetch-papers "Higgs boson light pseudoscalars four photons" \
-  --config ./hep-rag.yaml \
-  --limit 5
+pip install pytest
+python -m pytest tests/ -v
 ```
 
-先确认返回结果里有你想要的论文，再继续下一步。
+## License
 
-## 5. 下载、解析、入库
-
-```bash
-hep-rag ingest-online "Higgs boson light pseudoscalars four photons" \
-  --config ./hep-rag.yaml \
-  --limit 5 \
-  --download-limit 5 \
-  --parse-limit 5
-```
-
-这一步会自动完成：
-
-- 在线检索元数据
-- 下载 PDF
-- 调用 MinerU 解析
-- 建立搜索索引
-- 建立向量索引
-- 建立图结构边
-
-第一次建议先用小一点的 `limit` 跑通流程。
-
-## 6. 检索
-
-```bash
-hep-rag query "总结一下 H -> aa 的主要研究路线" \
-  --config ./hep-rag.yaml \
-  --limit 8
-```
-
-这个命令不调用大模型，只返回检索证据。
-
-## 7. 问答
-
-```bash
-hep-rag ask "总结一下 H -> aa 的主要研究路线" \
-  --config ./hep-rag.yaml \
-  --mode survey
-```
-
-这个命令会先检索，再调用你配置的模型生成回答。
-
-## 8. 输出在哪里
-
-- `workspace/db/hep_rag_v2.db`：主数据库
-- `workspace/data/pdfs/`：下载的 PDF
-- `workspace/data/parsed/`：MinerU 解析结果
-- `workspace/indexes/`：检索索引
-- `workspace/exports/`：导出结果
-
-## 9. 本地模型
-
-如果你不用远程 OpenAI 兼容接口，而是直接加载本地模型，再执行：
-
-```bash
-python3 -m pip install -e .[local-llm]
-```
-
-然后把 `hep-rag.yaml` 里的：
-
-```yaml
-llm:
-  enabled: true
-  backend: local_transformers
-  local_model_path: "/path/to/your/model"
-  device: cpu
-```
-
-填好即可。
+MIT
