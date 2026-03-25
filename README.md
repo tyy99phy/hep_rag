@@ -79,13 +79,36 @@ mineru:
 
 embedding:
   model: hash-idf-v1                 # 内置无依赖模型，或填 sentence-transformers 模型名
+```
 
+### LLM 后端
+
+**方式一：OpenAI 兼容接口**（vLLM / Ollama / 任何 OpenAI API 格式的服务）
+
+```yaml
 llm:
   enabled: true
-  backend: openai_compatible         # 或 local_transformers
-  api_base: "http://127.0.0.1:8000/v1"
-  api_key: "你的 key"
+  backend: openai_compatible
+  api_base: "http://127.0.0.1:8000/v1"  # vLLM / Ollama 等服务地址
+  api_key: "EMPTY"                       # 本地服务通常填 EMPTY
   model: "Qwen/Qwen3-32B"
+  chat_path: /chat/completions           # 默认值，一般不用改
+  temperature: 0.2
+  max_tokens: 1200
+  timeout_sec: 120
+  extra_headers: {}                      # 需要自定义 header 时填写
+```
+
+**方式二：本地 HuggingFace 模型**（需要 `pip install -e ".[local-llm]"`）
+
+```yaml
+llm:
+  enabled: true
+  backend: local_transformers
+  local_model_path: "/path/to/your/model"
+  device: cpu                            # 或 cuda
+  torch_dtype: auto
+  trust_remote_code: false
 ```
 
 完整字段说明见 [`config.example.yaml`](config.example.yaml)。
