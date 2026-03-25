@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import sys
 import time
 import urllib.parse
 from pathlib import Path
@@ -64,6 +65,13 @@ def http_get_json(url: str, *, timeout: int = 60, retries: int = 3) -> dict[str,
                 raise
             time.sleep(min(2 * attempt, 10))
     raise RuntimeError(f"Failed to fetch JSON: {last_error}")
+
+
+def emit_cli_status(message: str) -> None:
+    text = str(message or "").strip()
+    if not text:
+        return
+    print(f"[hep-rag] {text}", file=sys.stderr, flush=True)
 
 
 def save_raw_payload(*, run_id: int, collection: str, shard_slug: str, page: int, payload: dict[str, Any]) -> Path:

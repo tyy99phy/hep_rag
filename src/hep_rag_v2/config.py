@@ -40,13 +40,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "online": {
         "provider": "inspirehep",
-        "published_only": True,
+        "published_only": False,
         "query_suffix": "",
         "page_size": 25,
         "timeout_sec": 60,
         "retries": 3,
         "sleep_sec": 0.2,
         "fields": DEFAULT_INSPIRE_FIELDS,
+    },
+    "query_rewrite": {
+        "enabled": True,
+        "max_queries": 4,
+        "per_query_limit": 15,
+        "temperature": 0.0,
+        "max_tokens": 320,
     },
     "download": {
         "timeout_sec": 120,

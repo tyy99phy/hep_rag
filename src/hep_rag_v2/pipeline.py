@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from hep_rag_v2 import paths
 from hep_rag_v2.config import runtime_collection_config
@@ -32,6 +34,433 @@ from hep_rag_v2.vector import (
     search_works_hybrid,
 )
 
+ProgressCallback = Callable[[str], None] | None
+ONLINE_REQUIRED_FIELDS = (
+    "control_number",
+    "titles",
+    "abstracts",
+    "collaborations",
+    "document_type",
+    "earliest_date",
+    "publication_info",
+)
+INSPIRE_QUERY_FIELD_PATTERN = re.compile(
+    r"\b(?:collaboration|collection|collections|title|abstract|keyword|keywords|recid|doi|arxiv|author|document_type|date|earliest_date)\s*:",
+    re.IGNORECASE,
+)
+QUERY_REWRITE_SYSTEM_PROMPT = (
+    "You rewrite literature-search queries for academic databases such as INSPIRE-HEP. "
+    "Return ONLY valid JSON."
+)
+HEP_COLLABORATIONS = (
+    "CMS",
+    "ATLAS",
+    "ALICE",
+    "LHCB",
+    "TOTEM",
+    "CDF",
+    "D0",
+    "DZERO",
+    "BELLE",
+    "BABAR",
+)
+HEP_ENERGY_PATTERN = re.compile(r"\b(\d+(?:\.\d+)?)\s*TEV\b", re.IGNORECASE)
+
+
+def _emit_progress(progress: ProgressCallback, message: str) -> None:
+    if progress is not None:
+        progress(message)
+
+
+def _search_online_hits(
+    config: dict[str, Any],
+    *,
+    query: str,
+    limit: int,
+    progress: ProgressCallback = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    online = config.get("online") or {}
+    page_size = int(online.get("page_size") or 25)
+    fields = _ensure_online_fields(list(online.get("fields") or []))
+    published_only = bool(online.get("published_only", False))
+    query_suffix = str(online.get("query_suffix") or "")
+    timeout = int(online.get("timeout_sec") or 60)
+    retries = int(online.get("retries") or 3)
+    sleep_sec = float(online.get("sleep_sec") or 0.2)
+
+    search_plan = _plan_online_queries(
+        config,
+        query=query,
+        progress=progress,
+    )
+    query_cfg = config.get("query_rewrite") or {}
+    per_query_limit = max(
+        max(1, limit),
+        int(query_cfg.get("per_query_limit") or max(limit * 3, 10)),
+    )
+    ranked_batches: list[tuple[str, list[dict[str, Any]]]] = []
+    for idx, search_query in enumerate(search_plan["queries"], start=1):
+        if len(search_plan["queries"]) == 1:
+            _emit_progress(progress, "searching INSPIRE...")
+        else:
+            _emit_progress(progress, f"searching INSPIRE ({idx}/{len(search_plan['queries'])})...")
+        hits = search_literature(
+            search_query,
+            limit=per_query_limit,
+            page_size=page_size,
+            fields=fields,
+            published_only=published_only,
+            query_suffix=query_suffix,
+            timeout=timeout,
+            retries=retries,
+            sleep_sec=sleep_sec,
+        )
+        ranked_batches.append((search_query, hits))
+
+    merged_hits = _merge_ranked_hits(ranked_batches, limit=max(1, limit))
+    search_plan["published_only"] = published_only
+    return (merged_hits, search_plan)
+
+
+def _plan_online_queries(
+    config: dict[str, Any],
+    *,
+    query: str,
+    progress: ProgressCallback = None,
+) -> dict[str, Any]:
+    plan = {
+        "original_query": query,
+        "queries": [query],
+        "seed_queries": [],
+        "seed_used": False,
+        "rewrite_used": False,
+        "rewrite_backend": None,
+        "rewrite_model": None,
+    }
+    rewrite_cfg = config.get("query_rewrite") or {}
+    max_queries = max(2, int(rewrite_cfg.get("max_queries") or 4))
+
+    seen = {query.casefold()}
+    for item in _seed_online_queries(query):
+        value = str(item or "").strip()
+        if not value or value.casefold() in seen:
+            continue
+        seen.add(value.casefold())
+        plan["queries"].append(value)
+        plan["seed_queries"].append(value)
+        if len(plan["queries"]) >= max_queries:
+            plan["seed_used"] = True
+            return plan
+    if plan["seed_queries"]:
+        plan["seed_used"] = True
+
+    if not _should_rewrite_query(config, query=query):
+        return plan
+
+    llm_cfg = config.get("llm") or {}
+    remaining = max_queries - len(plan["queries"])
+    if remaining <= 0:
+        return plan
+    _emit_progress(progress, "rewriting search query...")
+    try:
+        client = _build_llm_client(llm_cfg)
+        response = client.chat(
+            messages=[
+                {"role": "system", "content": QUERY_REWRITE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": _query_rewrite_prompt(query, max_queries=remaining),
+                },
+            ],
+            temperature=float(rewrite_cfg.get("temperature") or 0.0),
+            max_tokens=int(rewrite_cfg.get("max_tokens") or 320),
+        )
+        variants = _parse_query_rewrite_output(response["content"])
+    except Exception:
+        _emit_progress(progress, "query rewrite unavailable; using the original query.")
+        return plan
+
+    for item in variants:
+        value = str(item or "").strip()
+        if not value or value.casefold() in seen:
+            continue
+        seen.add(value.casefold())
+        plan["queries"].append(value)
+        if len(plan["queries"]) >= max_queries:
+            break
+    if len(plan["queries"]) == 1 + len(plan["seed_queries"]):
+        if plan["seed_queries"]:
+            _emit_progress(progress, "query rewrite produced no useful alternatives; continuing with deterministic search variants.")
+        else:
+            _emit_progress(progress, "query rewrite produced no useful alternatives; using the original query.")
+        return plan
+    plan["rewrite_used"] = True
+    plan["rewrite_backend"] = str(llm_cfg.get("backend") or "openai_compatible")
+    plan["rewrite_model"] = response["model"]
+    return plan
+
+
+def _should_rewrite_query(config: dict[str, Any], *, query: str) -> bool:
+    value = str(query or "").strip()
+    if not value:
+        return False
+    rewrite_cfg = config.get("query_rewrite") or {}
+    if not bool(rewrite_cfg.get("enabled", True)):
+        return False
+    if int(rewrite_cfg.get("max_queries") or 4) <= 1:
+        return False
+    llm_cfg = config.get("llm") or {}
+    if not bool(llm_cfg.get("enabled")):
+        return False
+    if INSPIRE_QUERY_FIELD_PATTERN.search(value):
+        return False
+    return True
+
+
+def _seed_online_queries(query: str) -> list[str]:
+    value = str(query or "").strip()
+    if not value or INSPIRE_QUERY_FIELD_PATTERN.search(value):
+        return []
+
+    collaboration = _detect_hep_collaboration(value)
+    channel_terms = _detect_hep_channel_terms(value)
+    topology_terms = _detect_hep_topology_terms(value)
+    energy_terms = _detect_hep_energy_terms(value)
+
+    clauses: list[str] = []
+    if collaboration:
+        clauses.append(f"collaboration:{collaboration}")
+    if channel_terms:
+        clauses.append(_inspire_field_clause(channel_terms))
+    if topology_terms:
+        clauses.append(_inspire_field_clause(topology_terms))
+    if energy_terms and (channel_terms or topology_terms):
+        clauses.append(_inspire_field_clause(energy_terms))
+
+    if len(clauses) < 2:
+        return []
+    return [" and ".join(clauses)]
+
+
+def _detect_hep_collaboration(query: str) -> str | None:
+    upper = str(query or "").upper()
+    for name in HEP_COLLABORATIONS:
+        if re.search(rf"\b{re.escape(name)}\b", upper):
+            return "D0" if name in {"D0", "DZERO"} else name
+    return None
+
+
+def _detect_hep_channel_terms(query: str) -> list[str]:
+    upper = str(query or "").upper()
+    terms: list[str] = []
+
+    if re.search(r"\bSS\s*WW\b|\bSSWW\b", upper):
+        terms.extend(["same-sign WW", "same-sign W boson", "same-sign W boson pairs"])
+    if re.search(r"\bOS\s*WW\b|\bOSWW\b", upper):
+        terms.extend(["opposite-sign WW", "W+W-", "WW"])
+    if re.search(r"\bWZ(?:JJ)?\b", upper):
+        terms.extend(["WZ", "WZ boson pairs"])
+    if re.search(r"\bWW(?:JJ)?\b", upper) and not re.search(r"\bSS\s*WW\b|\bSSWW\b|\bOS\s*WW\b|\bOSWW\b", upper):
+        terms.extend(["WW", "W boson pairs"])
+    if re.search(r"\bZZ(?:JJ)?\b", upper):
+        terms.extend(["ZZ", "Z boson pairs"])
+    if re.search(r"\bVVJJ\b|\bVV\s*JJ\b", upper):
+        terms.extend(["diboson", "vector boson pairs"])
+
+    return _dedupe_preserve_order(terms)
+
+
+def _detect_hep_topology_terms(query: str) -> list[str]:
+    upper = str(query or "").upper()
+    has_two_jets = bool(
+        re.search(r"\b(?:2J|2JETS?|TWO JETS?|DIJET|JETS?)\b", upper)
+        or re.search(r"\b[A-Z0-9+/.-]*JJ\b", upper)
+    )
+    terms: list[str] = []
+
+    if re.search(r"\bVBS\b", upper):
+        terms.extend(["vector boson scattering", "electroweak production"])
+        has_two_jets = True
+    if re.search(r"\bVBF\b", upper):
+        terms.append("vector boson fusion")
+        has_two_jets = True
+    if re.search(r"\b(?:EWK|EW)\b", upper):
+        terms.extend(["electroweak production", "electroweak"])
+    if has_two_jets:
+        terms.extend(["in association with two jets", "two jets", "dijet"])
+
+    return _dedupe_preserve_order(terms)
+
+
+def _detect_hep_energy_terms(query: str) -> list[str]:
+    terms: list[str] = []
+    for match in HEP_ENERGY_PATTERN.finditer(str(query or "")):
+        value = f"{match.group(1)} TeV"
+        terms.append(value)
+        terms.append(f"sqrt(s)={value}")
+    return _dedupe_preserve_order(terms)
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
+def _inspire_field_clause(terms: list[str]) -> str:
+    atoms: list[str] = []
+    for term in _dedupe_preserve_order(terms):
+        quoted = _quote_inspire_term(term)
+        atoms.append(f'title:{quoted}')
+        atoms.append(f'abstract:{quoted}')
+    return "(" + " or ".join(atoms) + ")"
+
+
+def _quote_inspire_term(term: str) -> str:
+    return '"' + str(term).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _query_rewrite_prompt(query: str, *, max_queries: int) -> str:
+    return (
+        "Rewrite the following literature-search query into concise alternatives for INSPIRE-HEP.\n"
+        "Guidelines:\n"
+        "- Preserve concrete entities such as experiment names, collaborations, energies, and channels.\n"
+        "- Expand abbreviations when helpful.\n"
+        "- Produce alternatives that a paper title or abstract is likely to contain.\n"
+        "- Make the alternatives diverse:\n"
+        "  1. one long-form natural-language expansion,\n"
+        "  2. one paper-title-style phrasing,\n"
+        "  3. one INSPIRE-friendly fielded query using collaboration/title/abstract when obvious,\n"
+        "  4. one alternate notation query using particle names, charges, symbols, or final-state/topology wording when relevant.\n"
+        "- For collider-physics queries, prefer title-like phrases such as 'same-sign W boson pairs', "
+        "'vector boson scattering', and 'in association with two jets' when they are implied by the input.\n"
+        "- If a vector-boson-scattering query is underspecified, include standard companion channel wording that often appears in paper titles, "
+        "such as WW/WZ when appropriate.\n"
+        "- Do not add explanations.\n"
+        f"- Return a JSON array with up to {max_queries} strings.\n\n"
+        f"Query: {query}"
+    )
+
+
+def _parse_query_rewrite_output(text: str) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    fenced = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
+    for candidate in (fenced, _extract_json_array(fenced)):
+        items = _coerce_query_list(candidate)
+        if items:
+            return items
+
+    queries: list[str] = []
+    for line in fenced.splitlines():
+        value = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip().strip('"').strip("'")
+        if value:
+            queries.append(value)
+    return queries
+
+
+def _extract_json_array(text: str) -> str | None:
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    return text[start : end + 1]
+
+
+def _coerce_query_list(text: str | None) -> list[str]:
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return []
+    if isinstance(payload, dict):
+        payload = payload.get("queries")
+    if not isinstance(payload, list):
+        return []
+    out: list[str] = []
+    for item in payload:
+        value = str(item or "").strip()
+        if value:
+            out.append(value)
+    return out
+
+
+def _merge_ranked_hits(
+    ranked_batches: list[tuple[str, list[dict[str, Any]]]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not ranked_batches:
+        return []
+    if len(ranked_batches) == 1:
+        return ranked_batches[0][1][:limit]
+
+    scores: dict[str, float] = {}
+    first_seen: dict[str, tuple[int, int]] = {}
+    hit_map: dict[str, dict[str, Any]] = {}
+    for batch_idx, (_, hits) in enumerate(ranked_batches):
+        for rank, hit in enumerate(hits, start=1):
+            key = _online_hit_key(hit)
+            hit_map[key] = hit
+            scores[key] = scores.get(key, 0.0) + 1.0 / float(60 + rank) + _document_type_score_bonus(hit)
+            if key not in first_seen:
+                first_seen[key] = (batch_idx, rank)
+
+    ordered = sorted(
+        scores,
+        key=lambda key: (-scores[key], first_seen[key][0], first_seen[key][1]),
+    )
+    return [hit_map[key] for key in ordered[:limit]]
+
+
+def _online_hit_key(hit: dict[str, Any]) -> str:
+    metadata = hit.get("metadata") or {}
+    control_number = metadata.get("control_number")
+    if control_number is not None:
+        return f"cn:{control_number}"
+    self_link = str((hit.get("links") or {}).get("self") or "").strip()
+    if self_link:
+        return f"self:{self_link}"
+    title = str(((metadata.get("titles") or [{}])[0].get("title") or "")).strip()
+    year = str(((metadata.get("publication_info") or [{}])[0].get("year") or metadata.get("earliest_date") or "")).strip()
+    digest = hashlib.sha1(f"{title}|{year}".encode("utf-8")).hexdigest()
+    return f"fallback:{digest}"
+
+
+def _ensure_online_fields(fields: list[str]) -> list[str]:
+    seen = {str(item).strip() for item in fields if str(item).strip()}
+    out = [str(item).strip() for item in fields if str(item).strip()]
+    for field in ONLINE_REQUIRED_FIELDS:
+        if field not in seen:
+            seen.add(field)
+            out.append(field)
+    return out
+
+
+def _document_type_score_bonus(hit: dict[str, Any]) -> float:
+    metadata = hit.get("metadata") or {}
+    doc_types = {str(item).casefold() for item in (metadata.get("document_type") or [])}
+    if "article" in doc_types:
+        return 0.003
+    if "review" in doc_types:
+        return 0.0015
+    if "note" in doc_types:
+        return -0.0015
+    if "conference paper" in doc_types or "proceedings article" in doc_types:
+        return -0.001
+    return 0.0
+
 
 def initialize_workspace(config: dict[str, Any], *, collection_name: str | None = None) -> dict[str, Any]:
     ensure_db()
@@ -56,21 +485,18 @@ def fetch_online_candidates(
     *,
     query: str,
     limit: int,
+    progress: ProgressCallback = None,
 ) -> dict[str, Any]:
-    online = config.get("online") or {}
-    hits = search_literature(
-        query,
+    hits, search_plan = _search_online_hits(
+        config,
+        query=query,
         limit=limit,
-        page_size=int(online.get("page_size") or 25),
-        fields=list(online.get("fields") or []),
-        published_only=bool(online.get("published_only", True)),
-        query_suffix=str(online.get("query_suffix") or ""),
-        timeout=int(online.get("timeout_sec") or 60),
-        retries=int(online.get("retries") or 3),
-        sleep_sec=float(online.get("sleep_sec") or 0.2),
+        progress=progress,
     )
+    _emit_progress(progress, f"found {len(hits)} candidate papers.")
     return {
         "query": query,
+        "search_plan": search_plan,
         "effective_count": len(hits),
         "results": [summarize_hit(hit) for hit in hits],
     }
@@ -88,23 +514,18 @@ def ingest_online(
     skip_parse: bool = False,
     skip_index: bool = False,
     skip_graph: bool = False,
+    progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     ensure_db()
     collection_payload = runtime_collection_config(config, name=collection_name)
-    online = config.get("online") or {}
     download_cfg = config.get("download") or {}
     embedding_cfg = config.get("embedding") or {}
 
-    hits = search_literature(
-        query,
+    hits, search_plan = _search_online_hits(
+        config,
+        query=query,
         limit=limit,
-        page_size=int(online.get("page_size") or 25),
-        fields=list(online.get("fields") or []),
-        published_only=bool(online.get("published_only", True)),
-        query_suffix=str(online.get("query_suffix") or ""),
-        timeout=int(online.get("timeout_sec") or 60),
-        retries=int(online.get("retries") or 3),
-        sleep_sec=float(online.get("sleep_sec") or 0.2),
+        progress=progress,
     )
 
     download_cap = max(0, download_limit if download_limit is not None else len(hits))
@@ -114,6 +535,7 @@ def ingest_online(
         "query": query,
         "workspace_root": str(paths.workspace_root()),
         "collection": collection_payload["name"],
+        "search_plan": search_plan,
         "metadata": {
             "hits_seen": len(hits),
             "created": 0,
@@ -153,6 +575,7 @@ def ingest_online(
 
         try:
             # Phase 1: Metadata upsert (sequential, in DB transaction)
+            _emit_progress(progress, f"ingesting metadata for {len(hits)} papers...")
             download_tasks: list[dict[str, Any]] = []
             for hit in hits:
                 stats = upsert_work_from_hit(conn, collection_id=collection_id, hit=hit)
@@ -183,6 +606,7 @@ def ingest_online(
 
             download_results: list[dict[str, Any]] = []
             if download_tasks:
+                _emit_progress(progress, f"downloading PDFs for {len(download_tasks)} papers...")
                 with ThreadPoolExecutor(max_workers=min(max_workers, len(download_tasks))) as pool:
                     futures = {
                         pool.submit(
@@ -207,6 +631,8 @@ def ingest_online(
 
             # Phase 3: MinerU parse (sequential, in DB transaction)
             parse_count = 0
+            if parse_cap > 0 and mineru_client is not None:
+                _emit_progress(progress, f"parsing up to {parse_cap} PDFs with MinerU...")
             for pdf_info in download_results:
                 if not pdf_info["ok"] or parse_count >= parse_cap or mineru_client is None:
                     continue
@@ -237,9 +663,11 @@ def ingest_online(
                     )
 
             if not skip_index:
+                _emit_progress(progress, "building BM25 search indexes...")
                 summary["search"] = rebuild_search_indices(conn, target="all")
                 if bool(embedding_cfg.get("build_after_ingest", True)):
                     try:
+                        _emit_progress(progress, "building vector indexes...")
                         summary["vectors"] = rebuild_vector_indices(
                             conn,
                             target="all",
@@ -250,6 +678,7 @@ def ingest_online(
                         summary["vectors"] = {"ok": False, "error": str(exc)}
             if not skip_graph:
                 try:
+                    _emit_progress(progress, "building graph edges...")
                     summary["graph"] = rebuild_graph_edges(
                         conn,
                         target="all",
@@ -292,6 +721,7 @@ def retrieve(
     target: str | None = None,
     collection_name: str | None = None,
     model: str | None = None,
+    progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     ensure_db()
     retrieval_cfg = config.get("retrieval") or {}
@@ -307,12 +737,14 @@ def retrieve(
         "reasons": ["manual_target"],
     }
     actual_target = str(routing["target"])
+    _emit_progress(progress, f"routing query to {actual_target} retrieval...")
     graph_expand = retrieval_cfg.get("graph_expand")
     if graph_expand is None:
         graph_expand = routing.get("graph_expand") or 0
 
     with connect() as conn:
         if actual_target == "works":
+            _emit_progress(progress, "searching works...")
             works = search_works_hybrid(
                 conn,
                 query=query,
@@ -322,6 +754,7 @@ def retrieve(
                 graph_expand=int(graph_expand),
                 seed_limit=int(retrieval_cfg.get("seed_limit") or 5),
             )
+            _emit_progress(progress, "collecting supporting chunks...")
             chunks = _supporting_chunks(
                 conn,
                 query=query,
@@ -331,6 +764,7 @@ def retrieve(
                 limit=chunk_limit,
             )
         else:
+            _emit_progress(progress, "searching chunks...")
             chunks = search_chunks_hybrid(
                 conn,
                 query=query,
@@ -338,6 +772,7 @@ def retrieve(
                 limit=chunk_limit,
                 model=embedding_model,
             )
+            _emit_progress(progress, "hydrating work-level evidence...")
             works = _hydrate_works_from_chunks(conn, chunks=chunks, limit=limit_value)
 
     return {
@@ -364,11 +799,13 @@ def ask(
     target: str | None = None,
     collection_name: str | None = None,
     model: str | None = None,
+    progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     llm_cfg = config.get("llm") or {}
     if not bool(llm_cfg.get("enabled")):
         raise ValueError("LLM is disabled in config. Set llm.enabled=true and configure either openai_compatible or local_transformers.")
 
+    _emit_progress(progress, "retrieving evidence...")
     retrieval = retrieve(
         config,
         query=query,
@@ -376,6 +813,7 @@ def ask(
         target=target,
         collection_name=collection_name,
         model=model,
+        progress=progress,
     )
     evidence_limit = max(1, int((config.get("retrieval") or {}).get("answer_evidence_limit") or 6))
     evidence_chunks = retrieval["evidence_chunks"][:evidence_limit]
@@ -388,6 +826,7 @@ def ask(
         works=evidence_works,
         chunks=evidence_chunks,
     )
+    _emit_progress(progress, "generating answer with LLM...")
     answer = client.chat(
         messages=messages,
         temperature=float(llm_cfg.get("temperature") or 0.2),

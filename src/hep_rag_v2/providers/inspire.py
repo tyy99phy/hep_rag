@@ -17,7 +17,7 @@ INSPIRE_API = "https://inspirehep.net/api/literature"
 def build_search_query(
     query: str,
     *,
-    published_only: bool = True,
+    published_only: bool = False,
     query_suffix: str = "",
 ) -> str:
     parts = [str(query or "").strip()]
@@ -34,7 +34,7 @@ def search_literature(
     limit: int = 20,
     page_size: int = 25,
     fields: list[str] | None = None,
-    published_only: bool = True,
+    published_only: bool = False,
     query_suffix: str = "",
     timeout: int = 60,
     retries: int = 3,

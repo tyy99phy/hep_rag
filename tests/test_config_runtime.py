@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from hep_rag_v2 import paths
-from hep_rag_v2.config import apply_runtime_config, runtime_collection_config
+from hep_rag_v2.config import apply_runtime_config, default_config, runtime_collection_config
 from hep_rag_v2.providers.local_transformers import LocalTransformersClient
 from hep_rag_v2.providers.inspire import build_search_query, list_pdf_candidates
 
@@ -49,7 +49,17 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["label"], "Default Label")
         self.assertEqual(payload["fields"], ["titles", "abstracts"])
 
-    def test_build_search_query_appends_published_filter_once(self) -> None:
+    def test_default_config_disables_published_filter_and_enables_query_rewrite(self) -> None:
+        config = default_config()
+        self.assertFalse(config["online"]["published_only"])
+        self.assertTrue(config["query_rewrite"]["enabled"])
+        self.assertEqual(config["query_rewrite"]["max_queries"], 4)
+
+    def test_build_search_query_only_appends_published_filter_when_requested(self) -> None:
+        self.assertEqual(
+            build_search_query('collaboration:"CMS"', published_only=False),
+            'collaboration:"CMS"',
+        )
         self.assertEqual(
             build_search_query('collaboration:"CMS"', published_only=True),
             'collaboration:"CMS" and collection:Published',

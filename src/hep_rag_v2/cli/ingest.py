@@ -42,6 +42,7 @@ from ._common import (
     _select_inspire_enrichment_targets,
     _start_ingest_run,
     _update_ingest_run,
+    emit_cli_status,
     http_get_json,
     load_collection,
     parse_year_buckets,
@@ -52,12 +53,16 @@ from .inspect import _audit_document_payload
 
 def cmd_fetch_papers(args: argparse.Namespace) -> None:
     try:
+        emit_cli_status("loading config...")
         _, config = apply_runtime_config(config_path=args.config, workspace_root=args.workspace)
+        emit_cli_status("preparing online search...")
         payload = fetch_online_candidates(
             config,
             query=args.query,
             limit=args.limit,
+            progress=emit_cli_status,
         )
+        emit_cli_status(f"done. found {payload['effective_count']} candidate papers.")
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -65,7 +70,9 @@ def cmd_fetch_papers(args: argparse.Namespace) -> None:
 
 def cmd_ingest_online(args: argparse.Namespace) -> None:
     try:
+        emit_cli_status("loading config...")
         _, config = apply_runtime_config(config_path=args.config, workspace_root=args.workspace)
+        emit_cli_status("starting online ingest...")
         payload = ingest_online(
             config,
             query=args.query,
@@ -77,7 +84,9 @@ def cmd_ingest_online(args: argparse.Namespace) -> None:
             skip_parse=args.skip_parse,
             skip_index=args.skip_index,
             skip_graph=args.skip_graph,
+            progress=emit_cli_status,
         )
+        emit_cli_status("online ingest finished.")
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -85,7 +94,9 @@ def cmd_ingest_online(args: argparse.Namespace) -> None:
 
 def cmd_query(args: argparse.Namespace) -> None:
     try:
+        emit_cli_status("loading config...")
         _, config = apply_runtime_config(config_path=args.config, workspace_root=args.workspace)
+        emit_cli_status("running retrieval...")
         payload = retrieve(
             config,
             query=args.query,
@@ -93,7 +104,9 @@ def cmd_query(args: argparse.Namespace) -> None:
             target=args.target,
             collection_name=args.collection,
             model=args.model,
+            progress=emit_cli_status,
         )
+        emit_cli_status("retrieval finished.")
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -101,7 +114,9 @@ def cmd_query(args: argparse.Namespace) -> None:
 
 def cmd_ask(args: argparse.Namespace) -> None:
     try:
+        emit_cli_status("loading config...")
         _, config = apply_runtime_config(config_path=args.config, workspace_root=args.workspace)
+        emit_cli_status("starting retrieval + answer generation...")
         payload = ask(
             config,
             query=args.query,
@@ -110,7 +125,9 @@ def cmd_ask(args: argparse.Namespace) -> None:
             target=args.target,
             collection_name=args.collection,
             model=args.model,
+            progress=emit_cli_status,
         )
+        emit_cli_status("answer generation finished.")
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(payload, ensure_ascii=False, indent=2))
