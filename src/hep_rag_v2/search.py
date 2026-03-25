@@ -102,7 +102,7 @@ def search_index_counts(conn: sqlite3.Connection) -> dict[str, int]:
     return counts
 
 
-def rebuild_search_indices(conn: sqlite3.Connection, *, target: str = "all") -> dict[str, int]:
+def rebuild_search_indices(conn: sqlite3.Connection, *, target: str = "all", force: bool = True) -> dict[str, int]:
     ensure_search_schema(conn)
     summary = {
         "works": 0,
@@ -111,18 +111,23 @@ def rebuild_search_indices(conn: sqlite3.Connection, *, target: str = "all") -> 
         "assets": 0,
     }
     if target in {"all", "works"}:
-        summary["works"] = rebuild_work_search_index(conn)
+        summary["works"] = rebuild_work_search_index(conn, force=force)
     if target in {"all", "chunks"}:
-        summary["chunks"] = rebuild_chunk_search_index(conn)
+        summary["chunks"] = rebuild_chunk_search_index(conn, force=force)
     if target in {"all", "formulas", "structure"}:
-        summary["formulas"] = rebuild_formula_search_index(conn)
+        summary["formulas"] = rebuild_formula_search_index(conn, force=force)
     if target in {"all", "assets", "structure"}:
-        summary["assets"] = rebuild_asset_search_index(conn)
+        summary["assets"] = rebuild_asset_search_index(conn, force=force)
     return summary
 
 
-def rebuild_work_search_index(conn: sqlite3.Connection) -> int:
+def rebuild_work_search_index(conn: sqlite3.Connection, *, force: bool = True) -> int:
     ensure_search_schema(conn)
+    if not force:
+        existing = conn.execute(f"SELECT COUNT(*) FROM {WORK_SEARCH_TABLE}").fetchone()
+        source = conn.execute("SELECT COUNT(*) FROM works").fetchone()
+        if existing and source and int(existing[0]) == int(source[0]) and int(source[0]) > 0:
+            return int(existing[0])
     conn.execute(f"DELETE FROM {WORK_SEARCH_TABLE}")
 
     work_rows = conn.execute(
@@ -209,8 +214,13 @@ def rebuild_work_search_index(conn: sqlite3.Connection) -> int:
     return inserted
 
 
-def rebuild_chunk_search_index(conn: sqlite3.Connection) -> int:
+def rebuild_chunk_search_index(conn: sqlite3.Connection, *, force: bool = True) -> int:
     ensure_search_schema(conn)
+    if not force:
+        existing = conn.execute(f"SELECT COUNT(*) FROM {CHUNK_SEARCH_TABLE}").fetchone()
+        source = conn.execute("SELECT COUNT(*) FROM chunks WHERE is_retrievable = 1 AND COALESCE(clean_text, '') <> ''").fetchone()
+        if existing and source and int(existing[0]) == int(source[0]) and int(source[0]) > 0:
+            return int(existing[0])
     conn.execute(f"DELETE FROM {CHUNK_SEARCH_TABLE}")
 
     collections = _collections_by_work(conn)
@@ -254,8 +264,13 @@ def rebuild_chunk_search_index(conn: sqlite3.Connection) -> int:
     return inserted
 
 
-def rebuild_formula_search_index(conn: sqlite3.Connection) -> int:
+def rebuild_formula_search_index(conn: sqlite3.Connection, *, force: bool = True) -> int:
     ensure_search_schema(conn)
+    if not force:
+        existing = conn.execute(f"SELECT COUNT(*) FROM {FORMULA_SEARCH_TABLE}").fetchone()
+        source = conn.execute("SELECT COUNT(*) FROM formulas").fetchone()
+        if existing and source and int(existing[0]) == int(source[0]) and int(source[0]) > 0:
+            return int(existing[0])
     conn.execute(f"DELETE FROM {FORMULA_SEARCH_TABLE}")
 
     collections = _collections_by_work(conn)
@@ -315,8 +330,13 @@ def rebuild_formula_search_index(conn: sqlite3.Connection) -> int:
     return inserted
 
 
-def rebuild_asset_search_index(conn: sqlite3.Connection) -> int:
+def rebuild_asset_search_index(conn: sqlite3.Connection, *, force: bool = True) -> int:
     ensure_search_schema(conn)
+    if not force:
+        existing = conn.execute(f"SELECT COUNT(*) FROM {ASSET_SEARCH_TABLE}").fetchone()
+        source = conn.execute("SELECT COUNT(*) FROM assets").fetchone()
+        if existing and source and int(existing[0]) == int(source[0]) and int(source[0]) > 0:
+            return int(existing[0])
     conn.execute(f"DELETE FROM {ASSET_SEARCH_TABLE}")
 
     collections = _collections_by_work(conn)

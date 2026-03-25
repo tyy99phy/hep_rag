@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +139,7 @@ def ingest_online(
     }
 
     mineru_client = _build_mineru_client(config)
+    max_workers = max(1, int(download_cfg.get("max_download_workers") or 4))
 
     with connect() as conn:
         collection_id = upsert_collection(conn, collection_payload)
@@ -150,8 +152,8 @@ def ingest_online(
         )
 
         try:
-            download_count = 0
-            parse_count = 0
+            # Phase 1: Metadata upsert (sequential, in DB transaction)
+            download_tasks: list[dict[str, Any]] = []
             for hit in hits:
                 stats = upsert_work_from_hit(conn, collection_id=collection_id, hit=hit)
                 summary["metadata"]["created"] += int(stats["created"])
@@ -162,27 +164,51 @@ def ingest_online(
                 if work_id is None:
                     continue
 
-                if download_count >= download_cap:
+                if len(download_tasks) >= download_cap:
                     continue
 
-                download_count += 1
-                summary["downloads"]["attempted"] += 1
-                pdf_info = _download_hit_pdf(
-                    conn,
-                    hit=hit,
-                    work_id=work_id,
-                    collection_name=collection_payload["name"],
-                    timeout=int(download_cfg.get("timeout_sec") or 120),
-                    retries=int(download_cfg.get("retries") or 3),
-                    verify_ssl=bool(download_cfg.get("verify_ssl", True)),
+                download_tasks.append(
+                    _prepare_download(
+                        conn,
+                        hit=hit,
+                        work_id=work_id,
+                        collection_name=collection_payload["name"],
+                    )
                 )
-                summary["downloads"]["items"].append(pdf_info)
-                if not pdf_info["ok"]:
-                    summary["downloads"]["failed"] += 1
-                    continue
-                summary["downloads"]["ok"] += 1
 
-                if parse_count >= parse_cap or mineru_client is None:
+            # Phase 2: PDF download (parallel with ThreadPoolExecutor, no DB)
+            dl_timeout = int(download_cfg.get("timeout_sec") or 120)
+            dl_retries = int(download_cfg.get("retries") or 3)
+            dl_verify_ssl = bool(download_cfg.get("verify_ssl", True))
+
+            download_results: list[dict[str, Any]] = []
+            if download_tasks:
+                with ThreadPoolExecutor(max_workers=min(max_workers, len(download_tasks))) as pool:
+                    futures = {
+                        pool.submit(
+                            _execute_download,
+                            task=task,
+                            timeout=dl_timeout,
+                            retries=dl_retries,
+                            verify_ssl=dl_verify_ssl,
+                        ): task
+                        for task in download_tasks
+                    }
+                    for future in as_completed(futures):
+                        download_results.append(future.result())
+
+            summary["downloads"]["attempted"] = len(download_results)
+            for pdf_info in download_results:
+                summary["downloads"]["items"].append(pdf_info)
+                if pdf_info["ok"]:
+                    summary["downloads"]["ok"] += 1
+                else:
+                    summary["downloads"]["failed"] += 1
+
+            # Phase 3: MinerU parse (sequential, in DB transaction)
+            parse_count = 0
+            for pdf_info in download_results:
+                if not pdf_info["ok"] or parse_count >= parse_cap or mineru_client is None:
                     continue
 
                 parse_count += 1
@@ -192,7 +218,7 @@ def ingest_online(
                         conn,
                         config=config,
                         client=mineru_client,
-                        work_id=work_id,
+                        work_id=pdf_info["work_id"],
                         pdf_path=Path(pdf_info["path"]),
                         collection_name=collection_payload["name"],
                         replace_existing=replace_existing,
@@ -204,8 +230,8 @@ def ingest_online(
                     summary["mineru"]["items"].append(
                         {
                             "ok": False,
-                            "work_id": work_id,
-                            "title": _work_title(conn, work_id),
+                            "work_id": pdf_info["work_id"],
+                            "title": _work_title(conn, pdf_info["work_id"]),
                             "error": str(exc),
                         }
                     )
@@ -228,7 +254,7 @@ def ingest_online(
                         conn,
                         target="all",
                         collection=collection_payload["name"],
-                        model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
+                        similarity_model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
                     )
                 except Exception as exc:
                     summary["graph"] = {"ok": False, "error": str(exc)}
@@ -398,7 +424,7 @@ def _build_mineru_client(config: dict[str, Any]) -> MinerUClient | None:
     )
 
 
-def _build_llm_client(llm_cfg: dict[str, Any]):
+def _build_llm_client(llm_cfg: dict[str, Any]) -> OpenAICompatibleClient | LocalTransformersClient:
     backend = str(llm_cfg.get("backend") or "openai_compatible").strip() or "openai_compatible"
     if backend == "openai_compatible":
         return OpenAICompatibleClient(
@@ -417,6 +443,66 @@ def _build_llm_client(llm_cfg: dict[str, Any]):
             trust_remote_code=bool(llm_cfg.get("trust_remote_code", False)),
         )
     raise ValueError(f"Unsupported llm.backend: {backend}")
+
+
+def _prepare_download(
+    conn: sqlite3.Connection,
+    *,
+    hit: dict[str, Any],
+    work_id: int,
+    collection_name: str,
+) -> dict[str, Any]:
+    """Phase 1 helper: runs inside DB transaction, pre-computes download info."""
+    stem = paper_storage_stem(conn, work_id)
+    output_path = paths.PDF_DIR / collection_name / f"{stem}.pdf"
+    candidates = list_pdf_candidates(
+        hit,
+        resolve_arxiv_from_doi=True,
+        timeout=30,
+        retries=3,
+    )
+    return {
+        "work_id": work_id,
+        "title": _work_title(conn, work_id),
+        "output_path": str(output_path),
+        "candidates": candidates,
+        "content_addressed_name": content_addressed_name(hit),
+    }
+
+
+def _execute_download(
+    *,
+    task: dict[str, Any],
+    timeout: int,
+    retries: int,
+    verify_ssl: bool,
+) -> dict[str, Any]:
+    """Phase 2 helper: pure I/O, no DB access. Thread-safe."""
+    output_path = Path(task["output_path"])
+    if output_path.exists():
+        return {
+            "ok": True,
+            "work_id": task["work_id"],
+            "title": task["title"],
+            "path": str(output_path),
+            "source": "cached",
+        }
+
+    result = download_pdf_candidates(
+        task["candidates"],
+        output_path=output_path,
+        timeout=timeout,
+        retries=retries,
+        verify_ssl=verify_ssl,
+    )
+    result.update(
+        {
+            "work_id": task["work_id"],
+            "title": task["title"],
+            "candidate_name": task["content_addressed_name"],
+        }
+    )
+    return result
 
 
 def _download_hit_pdf(

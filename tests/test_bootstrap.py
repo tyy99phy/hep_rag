@@ -30,42 +30,30 @@ from hep_rag_v2.search import (
 from hep_rag_v2.textnorm import normalize_display_text, normalize_search_text
 
 
+@contextlib.contextmanager
+def _patch_workspace(tmp: Path):
+    original = paths.workspace_root()
+    try:
+        paths.set_workspace_root(tmp)
+        yield
+    finally:
+        paths.set_workspace_root(original)
+
+
 class TestBootstrap(unittest.TestCase):
     def test_ensure_db_initializes_schema_and_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            db_dir = tmp / "db"
-            data_dir = tmp / "data"
-            raw_dir = data_dir / "raw"
-            raw_inspire_dir = raw_dir / "inspire"
-            pdf_dir = data_dir / "pdfs"
-            parsed_dir = data_dir / "parsed"
-            index_dir = tmp / "indexes"
-            exports_dir = tmp / "exports"
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = db_dir / "hep_rag_v2.db"
-            collections_dir = tmp / "collections"
-
-            with mock.patch.object(paths, "WORKDIR", tmp), \
-                 mock.patch.object(paths, "DB_DIR", db_dir), \
-                 mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", collections_dir), \
-                 mock.patch.object(paths, "DATA_DIR", data_dir), \
-                 mock.patch.object(paths, "RAW_DIR", raw_dir), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", raw_inspire_dir), \
-                 mock.patch.object(paths, "PDF_DIR", pdf_dir), \
-                 mock.patch.object(paths, "PARSED_DIR", parsed_dir), \
-                 mock.patch.object(paths, "INDEX_DIR", index_dir), \
-                 mock.patch.object(paths, "EXPORTS_DIR", exports_dir):
+            with _patch_workspace(tmp):
                 db.ensure_db()
 
+            db_path = tmp / "db" / "hep_rag_v2.db"
             self.assertTrue(db_path.exists())
-            self.assertTrue(collections_dir.exists())
-            self.assertTrue(raw_inspire_dir.exists())
-            self.assertTrue(parsed_dir.exists())
-            self.assertTrue(index_dir.exists())
-            self.assertTrue(exports_dir.exists())
+            self.assertTrue((tmp / "collections").exists())
+            self.assertTrue((tmp / "data" / "raw" / "inspire").exists())
+            self.assertTrue((tmp / "data" / "parsed").exists())
+            self.assertTrue((tmp / "indexes").exists())
+            self.assertTrue((tmp / "exports").exists())
 
             with contextlib.closing(sqlite3.connect(db_path)) as conn:
                 names = {
@@ -87,152 +75,140 @@ class TestBootstrap(unittest.TestCase):
     def test_cli_bootstrap_legacy_corpus_imports_metadata_and_documents(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
-            collections_dir = tmp / "collections"
-            collections_dir.mkdir()
-            (collections_dir / "cms_rare_decay.json").write_text(
-                json.dumps(
-                    {
-                        "name": "cms_rare_decay",
-                        "label": "CMS rare decays",
-                        "source_priority": ["inspirehep", "arxiv"],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
+            with _patch_workspace(tmp):
+                collections_dir = tmp / "collections"
+                collections_dir.mkdir(parents=True, exist_ok=True)
+                (collections_dir / "cms_rare_decay.json").write_text(
+                    json.dumps(
+                        {
+                            "name": "cms_rare_decay",
+                            "label": "CMS rare decays",
+                            "source_priority": ["inspirehep", "arxiv"],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
 
-            legacy_db = tmp / "legacy.db"
-            with contextlib.closing(sqlite3.connect(legacy_db)) as legacy_conn:
-                legacy_conn.execute(
-                    """
-                    CREATE TABLE papers (
-                      paper_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      collection TEXT NOT NULL,
-                      inspire_id TEXT,
-                      arxiv_id TEXT,
-                      doi TEXT,
-                      title TEXT,
-                      abstract TEXT,
-                      year INTEGER,
-                      collaboration TEXT,
-                      experiments_json TEXT,
-                      authors_json TEXT,
-                      keywords_json TEXT,
-                      citation_count INTEGER,
-                      source_url TEXT,
-                      pdf_url TEXT,
-                      local_pdf_path TEXT,
-                      local_txt_path TEXT,
-                      raw_metadata_json TEXT,
-                      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                legacy_db = tmp / "legacy.db"
+                with contextlib.closing(sqlite3.connect(legacy_db)) as legacy_conn:
+                    legacy_conn.execute(
+                        """
+                        CREATE TABLE papers (
+                          paper_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          collection TEXT NOT NULL,
+                          inspire_id TEXT,
+                          arxiv_id TEXT,
+                          doi TEXT,
+                          title TEXT,
+                          abstract TEXT,
+                          year INTEGER,
+                          collaboration TEXT,
+                          experiments_json TEXT,
+                          authors_json TEXT,
+                          keywords_json TEXT,
+                          citation_count INTEGER,
+                          source_url TEXT,
+                          pdf_url TEXT,
+                          local_pdf_path TEXT,
+                          local_txt_path TEXT,
+                          raw_metadata_json TEXT,
+                          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
                     )
-                    """
-                )
-                legacy_conn.executemany(
-                    """
-                    INSERT INTO papers (
-                      collection, inspire_id, arxiv_id, doi, title, abstract, year, collaboration,
-                      citation_count, source_url, raw_metadata_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            "cms_rare_decay",
-                            "901",
-                            "2501.00011",
-                            None,
-                            "Bootstrap source paper",
-                            "A source-paper abstract.",
-                            2025,
-                            "CMS",
-                            3,
-                            "https://inspirehep.net/literature/901",
-                            json.dumps(
-                                {
-                                    "control_number": 901,
-                                    "titles": [{"title": "Bootstrap source paper"}],
-                                    "abstracts": [{"value": "A source-paper abstract."}],
-                                    "publication_info": [{"year": 2025}],
-                                    "arxiv_eprints": [{"value": "2501.00011"}],
-                                    "references": [{"control_number": 902}],
-                                },
-                                ensure_ascii=False,
+                    legacy_conn.executemany(
+                        """
+                        INSERT INTO papers (
+                          collection, inspire_id, arxiv_id, doi, title, abstract, year, collaboration,
+                          citation_count, source_url, raw_metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                "cms_rare_decay",
+                                "901",
+                                "2501.00011",
+                                None,
+                                "Bootstrap source paper",
+                                "A source-paper abstract.",
+                                2025,
+                                "CMS",
+                                3,
+                                "https://inspirehep.net/literature/901",
+                                json.dumps(
+                                    {
+                                        "control_number": 901,
+                                        "titles": [{"title": "Bootstrap source paper"}],
+                                        "abstracts": [{"value": "A source-paper abstract."}],
+                                        "publication_info": [{"year": 2025}],
+                                        "arxiv_eprints": [{"value": "2501.00011"}],
+                                        "references": [{"control_number": 902}],
+                                    },
+                                    ensure_ascii=False,
+                                ),
                             ),
-                        ),
-                        (
-                            "cms_rare_decay",
-                            "902",
-                            "2501.00012",
-                            None,
-                            "Bootstrap target paper",
-                            "A target-paper abstract.",
-                            2024,
-                            "CMS",
-                            1,
-                            "https://inspirehep.net/literature/902",
-                            json.dumps(
-                                {
-                                    "control_number": 902,
-                                    "titles": [{"title": "Bootstrap target paper"}],
-                                    "abstracts": [{"value": "A target-paper abstract."}],
-                                    "publication_info": [{"year": 2024}],
-                                    "arxiv_eprints": [{"value": "2501.00012"}],
-                                },
-                                ensure_ascii=False,
+                            (
+                                "cms_rare_decay",
+                                "902",
+                                "2501.00012",
+                                None,
+                                "Bootstrap target paper",
+                                "A target-paper abstract.",
+                                2024,
+                                "CMS",
+                                1,
+                                "https://inspirehep.net/literature/902",
+                                json.dumps(
+                                    {
+                                        "control_number": 902,
+                                        "titles": [{"title": "Bootstrap target paper"}],
+                                        "abstracts": [{"value": "A target-paper abstract."}],
+                                        "publication_info": [{"year": 2024}],
+                                        "arxiv_eprints": [{"value": "2501.00012"}],
+                                    },
+                                    ensure_ascii=False,
+                                ),
                             ),
-                        ),
-                    ],
+                        ],
+                    )
+                    legacy_conn.commit()
+
+                parsed_root = tmp / "legacy_parsed" / "cms_rare_decay" / "2501.00011"
+                raw_dir = parsed_root / "raw"
+                raw_dir.mkdir(parents=True)
+                (raw_dir / "paper_full.md").write_text("# Bootstrap source paper\n", encoding="utf-8")
+                (raw_dir / "paper_content_list.json").write_text(
+                    json.dumps(
+                        [
+                            {"type": "text", "text_level": 1, "text": "Bootstrap source paper", "page_idx": 1},
+                            {"type": "text", "text_level": 1, "text": "Abstract", "page_idx": 1},
+                            {"type": "text", "text": "We summarize the source measurement [1].", "page_idx": 1},
+                            {"type": "text", "text_level": 1, "text": "1 Method", "page_idx": 2},
+                            {"type": "text", "text": "The profile likelihood fit constrains the signal yield.", "page_idx": 2},
+                            {"type": "text", "text_level": 1, "text": "References", "page_idx": 3},
+                            {"type": "text", "text": "[1] Bootstrap target paper.", "page_idx": 3},
+                        ],
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
                 )
-                legacy_conn.commit()
+                (parsed_root / "manifest.json").write_text(
+                    json.dumps(
+                        {
+                            "engine": "mineru",
+                            "raw_dir": str(raw_dir),
+                            "full_md_path": str(raw_dir / "paper_full.md"),
+                            "content_list_path": str(raw_dir / "paper_content_list.json"),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
 
-            parsed_root = tmp / "legacy_parsed" / "cms_rare_decay" / "2501.00011"
-            raw_dir = parsed_root / "raw"
-            raw_dir.mkdir(parents=True)
-            (raw_dir / "paper_full.md").write_text("# Bootstrap source paper\n", encoding="utf-8")
-            (raw_dir / "paper_content_list.json").write_text(
-                json.dumps(
-                    [
-                        {"type": "text", "text_level": 1, "text": "Bootstrap source paper", "page_idx": 1},
-                        {"type": "text", "text_level": 1, "text": "Abstract", "page_idx": 1},
-                        {"type": "text", "text": "We summarize the source measurement [1].", "page_idx": 1},
-                        {"type": "text", "text_level": 1, "text": "1 Method", "page_idx": 2},
-                        {"type": "text", "text": "The profile likelihood fit constrains the signal yield.", "page_idx": 2},
-                        {"type": "text", "text_level": 1, "text": "References", "page_idx": 3},
-                        {"type": "text", "text": "[1] Bootstrap target paper.", "page_idx": 3},
-                    ],
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-            (parsed_root / "manifest.json").write_text(
-                json.dumps(
-                    {
-                        "engine": "mineru",
-                        "raw_dir": str(raw_dir),
-                        "full_md_path": str(raw_dir / "paper_full.md"),
-                        "content_list_path": str(raw_dir / "paper_content_list.json"),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", collections_dir), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
                 db.ensure_db()
                 parser = cli.build_parser()
                 args = parser.parse_args(
@@ -287,8 +263,6 @@ class TestBootstrap(unittest.TestCase):
     def test_cli_enrich_inspire_metadata_backfills_citations_and_graph(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
             collections_dir = tmp / "collections"
             collections_dir.mkdir()
             (collections_dir / "cms_rare_decay.json").write_text(
@@ -305,17 +279,7 @@ class TestBootstrap(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", collections_dir), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+            with _patch_workspace(tmp):
                 db.ensure_db()
                 with db.connect() as conn:
                     collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
@@ -372,7 +336,7 @@ class TestBootstrap(unittest.TestCase):
                     return payload_by_id[work_id]
 
                 out = io.StringIO()
-                with mock.patch.object(cli, "http_get_json", side_effect=fake_http_get_json):
+                with mock.patch("hep_rag_v2.cli.ingest.http_get_json", side_effect=fake_http_get_json):
                     with contextlib.redirect_stdout(out):
                         cli.cmd_enrich_inspire_metadata(
                             SimpleNamespace(
@@ -414,19 +378,7 @@ class TestMetadataGraph(unittest.TestCase):
     def test_upsert_work_materializes_graph_rows(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+            with _patch_workspace(tmp):
                 db.ensure_db()
                 with db.connect() as conn:
                     collection_id = upsert_collection(
@@ -484,19 +436,7 @@ class TestMetadataGraph(unittest.TestCase):
     def test_backfill_resolves_citations_after_target_arrives(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+            with _patch_workspace(tmp):
                 db.ensure_db()
                 with db.connect() as conn:
                     collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
@@ -534,19 +474,7 @@ class TestFullTextMaterialization(unittest.TestCase):
     def test_materialize_mineru_document_strips_inline_citations_and_excludes_bibliography(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+            with _patch_workspace(tmp):
                 db.ensure_db()
                 with db.connect() as conn:
                     collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
@@ -687,19 +615,7 @@ class TestFullTextMaterialization(unittest.TestCase):
     def test_cli_import_mineru_and_show_document(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+            with _patch_workspace(tmp):
                 db.ensure_db()
                 with db.connect() as conn:
                     collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
@@ -785,19 +701,7 @@ class TestFullTextMaterialization(unittest.TestCase):
     def test_audit_document_ignores_valid_section_references_and_inequalities(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+            with _patch_workspace(tmp):
                 db.ensure_db()
                 with db.connect() as conn:
                     collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
@@ -1301,19 +1205,7 @@ class TestSearchIndex(unittest.TestCase):
     def test_build_search_index_and_query_works_and_chunks(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+            with _patch_workspace(tmp):
                 db.ensure_db()
                 with db.connect() as conn:
                     collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
@@ -1392,19 +1284,7 @@ class TestSearchIndex(unittest.TestCase):
     def test_build_structure_search_index_and_query_formulas_and_assets(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+            with _patch_workspace(tmp):
                 db.ensure_db()
                 with db.connect() as conn:
                     collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
@@ -1469,19 +1349,7 @@ class TestSearchIndex(unittest.TestCase):
     def test_cli_build_search_index_and_search_bm25(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+            with _patch_workspace(tmp):
                 db.ensure_db()
                 with db.connect() as conn:
                     collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
@@ -1521,19 +1389,7 @@ class TestGraphBuild(unittest.TestCase):
     def test_rebuild_graph_edges_materializes_bibliographic_coupling_and_co_citation(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+            with _patch_workspace(tmp):
                 db.ensure_db()
                 with db.connect() as conn:
                     collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})
@@ -1617,19 +1473,7 @@ class TestGraphBuild(unittest.TestCase):
     def test_cli_show_graph_reports_neighbors(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
-            schema_path = ROOT / "db" / "schema.sql"
-            db_path = tmp / "hep_rag_v2.db"
-            with mock.patch.object(paths, "DB_PATH", db_path), \
-                 mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-                 mock.patch.object(paths, "DB_DIR", tmp), \
-                 mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
-                 mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-                 mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-                 mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-                 mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-                 mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-                 mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-                 mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+            with _patch_workspace(tmp):
                 db.ensure_db()
                 with db.connect() as conn:
                     collection_id = upsert_collection(conn, {"name": "cms_rare_decay"})

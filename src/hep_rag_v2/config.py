@@ -52,6 +52,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "timeout_sec": 120,
         "retries": 3,
         "verify_ssl": True,
+        "max_download_workers": 4,
     },
     "mineru": {
         "enabled": False,
@@ -64,6 +65,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "language": "en",
         "poll_interval_sec": 10,
         "max_wait_sec": 1800,
+        "timeout_sec": 120,
     },
     "embedding": {
         "model": "hash-idf-v1",

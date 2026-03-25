@@ -6,6 +6,7 @@ import re
 
 TAG_RE = re.compile(r"</?[A-Za-z][^>]*?>")
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_CJK_RE = re.compile(r"([\u4e00-\u9fff\u3400-\u4dbf])")
 LATEX_COMMAND_RE = re.compile(r"\\([A-Za-z]+)")
 SPACED_DIGIT_RE = re.compile(r"(?<=\b\d)\s+(?=\d\b)")
 SPACED_LETTER_RE = re.compile(r"\b(?:[A-Za-z]\s+){1,}[A-Za-z]\b")
@@ -192,6 +193,7 @@ def normalize_display_text(text: str) -> str:
 
 def normalize_search_text(text: str) -> str:
     text = _normalize_common(text)
+    text = _segment_cjk(text)
     text = _replace_unicode_math(text)
     text = _replace_latex_commands(text, replacements=COMMAND_REPLACEMENTS)
     text = text.replace("$", " ")
@@ -225,6 +227,10 @@ def _normalize_common(text: str) -> str:
     text = CONTROL_CHAR_RE.sub("", text)
     text = TAG_RE.sub(" ", text)
     return text
+
+
+def _segment_cjk(text: str) -> str:
+    return _CJK_RE.sub(r" \1 ", text)
 
 
 def _replace_unicode_math(text: str) -> str:

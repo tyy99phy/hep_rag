@@ -34,6 +34,7 @@ download:
   timeout_sec: 120
   retries: 3
   verify_ssl: true
+  max_download_workers: 4
 
 mineru:
   enabled: false

@@ -182,7 +182,7 @@ def canonical_identity(metadata: dict[str, Any]) -> tuple[str, str]:
     doi = first_doi(metadata)
     if doi:
         return ("doi", doi)
-    fingerprint = hashlib.sha1(
+    fingerprint = hashlib.sha256(
         f"{first_title(metadata) or ''}|{year_from_metadata(metadata) or ''}".encode("utf-8")
     ).hexdigest()
     return ("local", fingerprint)

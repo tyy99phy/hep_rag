@@ -247,17 +247,9 @@ class TestVectorSearch(unittest.TestCase):
 
 @contextlib.contextmanager
 def _patch_workspace(tmp: Path):
-    schema_path = ROOT / "db" / "schema.sql"
-    with mock.patch.object(paths, "WORKDIR", tmp), \
-         mock.patch.object(paths, "DB_DIR", tmp / "db"), \
-         mock.patch.object(paths, "DB_PATH", tmp / "db" / "hep_rag_v2.db"), \
-         mock.patch.object(paths, "SCHEMA_PATH", schema_path), \
-         mock.patch.object(paths, "COLLECTIONS_DIR", tmp / "collections"), \
-         mock.patch.object(paths, "DATA_DIR", tmp / "data"), \
-         mock.patch.object(paths, "RAW_DIR", tmp / "data" / "raw"), \
-         mock.patch.object(paths, "RAW_INSPIRE_DIR", tmp / "data" / "raw" / "inspire"), \
-         mock.patch.object(paths, "PDF_DIR", tmp / "data" / "pdfs"), \
-         mock.patch.object(paths, "PARSED_DIR", tmp / "data" / "parsed"), \
-         mock.patch.object(paths, "INDEX_DIR", tmp / "indexes"), \
-         mock.patch.object(paths, "EXPORTS_DIR", tmp / "exports"):
+    original = paths.workspace_root()
+    try:
+        paths.set_workspace_root(tmp)
         yield
+    finally:
+        paths.set_workspace_root(original)

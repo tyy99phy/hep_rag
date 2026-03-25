@@ -34,3 +34,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+hep_rag_v2 = ["schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
