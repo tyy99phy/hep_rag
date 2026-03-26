@@ -995,7 +995,7 @@
       const abstract = truncateText(item.abstract || "", options.emphasizeEvidence ? 360 : 280) || "No abstract available.";
       const evidenceRef = options.refType && options.refIndex ? `${options.refType}${options.refIndex}` : "";
       const evidenceAttrs = evidenceRef
-        ? ` id="${escapeHtml(evidenceRefId(evidenceRef))}" data-evidence-ref="${escapeHtml(evidenceRef)}" class="result-card evidence-target"`
+        ? ` id="${escapeHtml(evidenceRefId(evidenceRef))}" class="result-card evidence-target"`
         : ` class="result-card"`;
       return `
         <div${evidenceAttrs}>
@@ -1014,6 +1014,8 @@
           ${renderExternalLinkRow({
             canonicalSource: item.canonical_source,
             canonicalId: item.canonical_id,
+            primarySourceUrl: item.primary_source_url,
+            primaryPdfUrl: item.primary_pdf_url,
           })}
           ${(relatedVersions.length || relatedRetrieved.length) ? `
             <details class="result-details">
@@ -1040,6 +1042,8 @@
           ${renderExternalLinkRow({
             canonicalSource: version.canonical_source,
             canonicalId: version.canonical_id,
+            primarySourceUrl: version.primary_source_url,
+            primaryPdfUrl: version.primary_pdf_url,
           })}
         </div>
       `;
@@ -1058,6 +1062,8 @@
           ${renderExternalLinkRow({
             canonicalSource: version.canonical_source,
             canonicalId: version.canonical_id,
+            primarySourceUrl: version.primary_source_url,
+            primaryPdfUrl: version.primary_pdf_url,
           })}
         </div>
       `;
@@ -1068,7 +1074,7 @@
       const preview = truncateText(fullText, options.emphasizeEvidence ? 240 : 420) || "No chunk text available.";
       const evidenceRef = options.refType && options.refIndex ? `${options.refType}${options.refIndex}` : "";
       const evidenceAttrs = evidenceRef
-        ? ` id="${escapeHtml(evidenceRefId(evidenceRef))}" data-evidence-ref="${escapeHtml(evidenceRef)}" class="result-card evidence-target"`
+        ? ` id="${escapeHtml(evidenceRefId(evidenceRef))}" class="result-card evidence-target"`
         : ` class="result-card"`;
       return `
         <div${evidenceAttrs}>
@@ -1134,6 +1140,8 @@
       inspire = null,
       arxiv = null,
       doi = null,
+      primarySourceUrl = null,
+      primaryPdfUrl = null,
     } = {}) {
       const links = [];
       const pushLink = (label, url) => {
@@ -1148,7 +1156,7 @@
       const doiId = String(doi || (normalizedSource === "doi" ? normalizedId : "")).trim();
 
       if (inspireId) {
-        pushLink("INSPIRE", `https://inspirehep.net/literature/${encodeURIComponent(inspireId)}`);
+        pushLink("INSPIRE", primarySourceUrl || `https://inspirehep.net/literature/${encodeURIComponent(inspireId)}`);
       }
       if (arxivId) {
         pushLink("arXiv", `https://arxiv.org/abs/${encodeURIComponent(arxivId)}`);
@@ -1156,6 +1164,9 @@
       if (doiId) {
         const normalizedDoi = doiId.replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "");
         pushLink("DOI", `https://doi.org/${encodeURIComponent(normalizedDoi)}`);
+      }
+      if (primaryPdfUrl) {
+        pushLink("PDF", primaryPdfUrl);
       }
 
       if (!links.length) return "";
@@ -1507,7 +1518,7 @@
       }
     });
     resultDisplayEl.addEventListener("click", (event) => {
-      const target = event.target instanceof Element ? event.target.closest("[data-evidence-ref]") : null;
+      const target = event.target instanceof Element ? event.target.closest(".md-ref-link[data-evidence-ref]") : null;
       if (!target) return;
       const ref = target.getAttribute("data-evidence-ref");
       if (!ref) return;

@@ -65,7 +65,15 @@ def _fetch_work_rows(conn: sqlite3.Connection, ids: list[int]) -> dict[int, dict
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"""
-        SELECT w.work_id, w.title AS raw_title, w.abstract, w.year, w.canonical_source, w.canonical_id
+        SELECT
+          w.work_id,
+          w.title AS raw_title,
+          w.abstract,
+          w.year,
+          w.canonical_source,
+          w.canonical_id,
+          w.primary_source_url,
+          w.primary_pdf_url
         FROM works w
         WHERE w.work_id IN ({placeholders})
         """,

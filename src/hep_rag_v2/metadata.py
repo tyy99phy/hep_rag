@@ -674,7 +674,9 @@ def family_payload_map(conn: sqlite3.Connection, *, work_ids: list[int]) -> dict
           w.title,
           w.year,
           w.canonical_source,
-          w.canonical_id
+          w.canonical_id,
+          w.primary_source_url,
+          w.primary_pdf_url
         FROM work_family_members m
         JOIN works w ON w.work_id = m.work_id
         WHERE m.family_id IN ({family_placeholders})
@@ -693,6 +695,8 @@ def family_payload_map(conn: sqlite3.Connection, *, work_ids: list[int]) -> dict
                 "year": row["year"],
                 "canonical_source": row["canonical_source"],
                 "canonical_id": row["canonical_id"],
+                "primary_source_url": row["primary_source_url"],
+                "primary_pdf_url": row["primary_pdf_url"],
             }
         )
 
