@@ -354,6 +354,21 @@
       font-size: 13px;
     }
 
+    .result-link-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+
+    .result-link-row a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      font-weight: 600;
+    }
+
     .result-kv {
       display: grid;
       gap: 6px;
@@ -965,6 +980,11 @@
             ${badge(`Year ${item.year ?? "?"}`)}
             ${badge(`ID ${escapeHtml(String(idLabel))}`)}
           </div>
+          ${renderExternalLinkRow({
+            inspire: ids.inspire,
+            arxiv: ids.arxiv,
+            doi: ids.doi,
+          })}
         </div>
       `;
     }
@@ -991,6 +1011,10 @@
             ${badge(`${escapeHtml(item.canonical_source || "id")}:${escapeHtml(String(item.canonical_id || item.work_id || ""))}`)}
           </div>
           <div class="result-card-copy">${escapeHtml(abstract)}</div>
+          ${renderExternalLinkRow({
+            canonicalSource: item.canonical_source,
+            canonicalId: item.canonical_id,
+          })}
           ${(relatedVersions.length || relatedRetrieved.length) ? `
             <details class="result-details">
               <summary>Version details (${relatedVersions.length || relatedRetrieved.length})</summary>
@@ -1013,6 +1037,10 @@
             ${badge(`Year ${version.year ?? "?"}`)}
             ${badge(`${escapeHtml(version.canonical_source || "id")}:${escapeHtml(String(version.canonical_id || version.work_id || ""))}`)}
           </div>
+          ${renderExternalLinkRow({
+            canonicalSource: version.canonical_source,
+            canonicalId: version.canonical_id,
+          })}
         </div>
       `;
     }
@@ -1027,6 +1055,10 @@
             ${badge(`Year ${version.year ?? "?"}`)}
             ${badge(`${escapeHtml(version.canonical_source || "id")}:${escapeHtml(String(version.canonical_id || version.work_id || ""))}`)}
           </div>
+          ${renderExternalLinkRow({
+            canonicalSource: version.canonical_source,
+            canonicalId: version.canonical_id,
+          })}
         </div>
       `;
     }
@@ -1094,6 +1126,40 @@
 
     function badge(text) {
       return `<span class="result-badge">${text}</span>`;
+    }
+
+    function renderExternalLinkRow({
+      canonicalSource = null,
+      canonicalId = null,
+      inspire = null,
+      arxiv = null,
+      doi = null,
+    } = {}) {
+      const links = [];
+      const pushLink = (label, url) => {
+        if (!url) return;
+        links.push(`<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`);
+      };
+
+      const normalizedSource = String(canonicalSource || "").trim().toLowerCase();
+      const normalizedId = String(canonicalId || "").trim();
+      const inspireId = String(inspire || (normalizedSource === "inspire" ? normalizedId : "")).trim();
+      const arxivId = String(arxiv || (normalizedSource === "arxiv" ? normalizedId : "")).trim();
+      const doiId = String(doi || (normalizedSource === "doi" ? normalizedId : "")).trim();
+
+      if (inspireId) {
+        pushLink("INSPIRE", `https://inspirehep.net/literature/${encodeURIComponent(inspireId)}`);
+      }
+      if (arxivId) {
+        pushLink("arXiv", `https://arxiv.org/abs/${encodeURIComponent(arxivId)}`);
+      }
+      if (doiId) {
+        const normalizedDoi = doiId.replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "");
+        pushLink("DOI", `https://doi.org/${encodeURIComponent(normalizedDoi)}`);
+      }
+
+      if (!links.length) return "";
+      return `<div class="result-link-row">${links.join("")}</div>`;
     }
 
     function evidenceRefId(ref) {
