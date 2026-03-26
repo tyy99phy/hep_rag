@@ -420,6 +420,7 @@ def search_works_bm25(
           w.title AS raw_title,
           ws.title AS indexed_title,
           ws.abstract AS indexed_abstract,
+          ws.collaborations AS indexed_collaborations,
           bm25({WORK_SEARCH_TABLE}) AS score
         FROM {WORK_SEARCH_TABLE} ws
         JOIN works w ON w.work_id = CAST(ws.work_id AS INTEGER)

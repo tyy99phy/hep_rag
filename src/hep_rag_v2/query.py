@@ -11,6 +11,9 @@ RELATION_QUERY_PATTERNS = (
     "related works",
     "review",
     "survey",
+    "summary",
+    "summarize",
+    "overview",
     "compare",
     "comparison",
     "similar",
@@ -23,6 +26,10 @@ RELATION_QUERY_PATTERNS = (
     "timeline",
     "evolution",
     "landscape",
+    "总结",
+    "整理",
+    "概述",
+    "总览",
     "综述",
     "相关工作",
     "联系",
@@ -51,6 +58,17 @@ INTENT_TOKEN_PATTERNS = (
     "background",
     "history",
     "timeline",
+    "summary",
+    "summarize",
+    "overview",
+    "latest",
+    "current",
+    "recent",
+    "best",
+    "result",
+    "results",
+    "status",
+    "update",
     "work",
     "works",
     "paper",
@@ -81,6 +99,15 @@ COMMON_STOPWORDS = {
     "what",
     "which",
     "with",
+    "best",
+    "current",
+    "latest",
+    "recent",
+    "result",
+    "results",
+    "status",
+    "summary",
+    "overview",
     "一下",
     "一下子",
     "介绍一下",
@@ -91,8 +118,85 @@ COMMON_STOPWORDS = {
     "看看",
     "来吧",
 }
+RESULT_QUERY_PATTERNS = (
+    "summary",
+    "summarize",
+    "overview",
+    "current result",
+    "current results",
+    "latest result",
+    "latest results",
+    "recent result",
+    "recent results",
+    "best result",
+    "best results",
+    "status",
+    "update",
+    "总结",
+    "整理",
+    "概述",
+    "总览",
+    "最新",
+    "结果",
+    "当前",
+    "目前",
+    "现状",
+    "进展",
+)
+INTENT_PHRASE_PATTERNS = (
+    r"综述(?:一下)?",
+    r"总结(?:一下)?",
+    r"整理(?:一下)?",
+    r"介绍(?:一下)?",
+    r"相关工作",
+    r"最新(?:结果|进展)?",
+    r"当前(?:结果|状态|现状)?",
+    r"目前(?:结果|状态|现状)?",
+    r"\b(?:summary|summarize|overview)\b",
+    r"\b(?:current|latest|recent|newest|best)\s+(?:result|results|status|overview|summary)\b",
+    r"\b(?:current|latest|recent|newest|best)\b",
+    r"\bresults?\b",
+)
+HEP_QUERY_EXPANSIONS = (
+    (r"\bCMS\b", " cms cms collaboration "),
+    (r"\bATLAS\b", " atlas atlas collaboration "),
+    (r"\bVBS\b", " vbs vector boson scattering electroweak production "),
+    (r"\bSS\s*WW\b|\bSSWW\b", " ssww same-sign WW same-sign W boson pairs "),
+    (r"same[- ]sign\s+ww", " ssww same-sign WW same-sign W boson pairs "),
+    (r"W\s*[±+]\s*W\s*[±+]", " ssww same-sign WW same-sign W boson pairs "),
+)
+SINGLE_CJK_TOKEN_RE = re.compile(r"^[\u3400-\u9fff]$")
 
 CONCEPT_DEFINITIONS = (
+    {
+        "name": "cms",
+        "triggers": ("cms",),
+        "aliases": ("cms", "cms collaboration"),
+        "semantic_terms": ("cms collaboration",),
+    },
+    {
+        "name": "atlas",
+        "triggers": ("atlas",),
+        "aliases": ("atlas", "atlas collaboration"),
+        "semantic_terms": ("atlas collaboration",),
+    },
+    {
+        "name": "vbs",
+        "triggers": ("vbs",),
+        "aliases": ("vbs", "vector boson scattering", "electroweak production"),
+        "semantic_terms": ("vector boson scattering", "electroweak production"),
+    },
+    {
+        "name": "same_sign_ww",
+        "triggers": ("ssww",),
+        "aliases": (
+            "ssww",
+            "same sign ww",
+            "same sign w boson pairs",
+            "same electric charge",
+        ),
+        "semantic_terms": ("same-sign W boson pairs", "same-sign WW"),
+    },
     {
         "name": "higgs",
         "triggers": ("h", "higgs"),
@@ -157,7 +261,7 @@ class QueryProfile:
 
 def analyze_query(text: str) -> QueryProfile:
     raw = str(text or "")
-    normalized = normalize_search_text(raw)
+    normalized = _normalize_query_text(raw)
     tokens = tuple(_tokenize(normalized))
     relation_patterns = tuple(pattern for pattern in RELATION_QUERY_PATTERNS if pattern in raw.casefold())
 
@@ -179,7 +283,7 @@ def analyze_query(text: str) -> QueryProfile:
         aliases = tuple(dict.fromkeys(item.casefold() for item in definition["aliases"]))
         groups.append(aliases)
         concepts.append(str(definition["name"]))
-        consumed.update(triggers)
+        consumed.update(_definition_consumed_tokens(definition))
 
     for token in content_tokens:
         if token in consumed:
@@ -270,6 +374,20 @@ def is_relation_query(text: str) -> bool:
     return bool(analyze_query(text).relation_patterns)
 
 
+def is_result_query(text: str) -> bool:
+    value = str(text or "").casefold()
+    return any(pattern in value for pattern in RESULT_QUERY_PATTERNS)
+
+
+def _normalize_query_text(text: str) -> str:
+    value = str(text or "")
+    for pattern in INTENT_PHRASE_PATTERNS:
+        value = re.sub(pattern, " ", value, flags=re.IGNORECASE)
+    for pattern, replacement in HEP_QUERY_EXPANSIONS:
+        value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
+    return normalize_search_text(value)
+
+
 def _tokenize(text: str) -> list[str]:
     return [token.casefold() for token in re.findall(r"\w+", text or "", flags=re.UNICODE)]
 
@@ -278,11 +396,21 @@ def _is_intent_token(token: str) -> bool:
     value = str(token or "").casefold()
     if not value:
         return True
+    if SINGLE_CJK_TOKEN_RE.fullmatch(value):
+        return True
     if value in COMMON_STOPWORDS:
         return True
     if any(pattern in value for pattern in INTENT_TOKEN_PATTERNS):
         return True
     return value.isdigit() and len(value) > 4
+
+
+def _definition_consumed_tokens(definition: dict[str, object]) -> set[str]:
+    tokens: set[str] = set()
+    for field in ("triggers", "aliases", "semantic_terms"):
+        for item in definition.get(field, ()) or ():
+            tokens.update(_tokenize(str(item)))
+    return tokens
 
 
 def _group_query(group: tuple[str, ...]) -> str:

@@ -25,6 +25,7 @@ from hep_rag_v2.vector import (
     HASH_IDF_VECTOR_MODEL,
     rebuild_vector_indices,
     route_query,
+    search_works_hybrid,
     search_chunks_vector,
     search_works_vector,
 )
@@ -43,6 +44,30 @@ class TestVectorSearch(unittest.TestCase):
         self.assertIn('"higgs"', queries[0])
         self.assertIn('"pseudoscalar"', queries[0])
         self.assertNotIn("综述", " ".join(queries))
+
+    def test_query_rewrite_handles_hep_abbreviations_and_result_style_queries(self) -> None:
+        rewritten = rewrite_query_for_embedding("总结CMS VBS SSWW的最新结果")
+        self.assertIn("cms collaboration", rewritten)
+        self.assertIn("vector boson scattering", rewritten)
+        self.assertIn("same-sign", rewritten)
+        self.assertNotIn("总结", rewritten)
+        self.assertNotIn("最新", rewritten)
+
+        queries = build_match_queries("CMS current SSWW best results")
+        self.assertGreaterEqual(len(queries), 1)
+        self.assertIn('"cms"', queries[0])
+        self.assertIn('"same sign ww"', queries[0])
+        self.assertNotIn("current", " ".join(queries))
+        self.assertNotIn("best", " ".join(queries))
+        self.assertNotIn("results", " ".join(queries))
+
+        english_routing = route_query("CMS current SSWW best results")
+        self.assertEqual(english_routing["target"], "works")
+        self.assertEqual(english_routing["graph_expand"], 3)
+
+        chinese_routing = route_query("总结CMS VBS SSWW的最新结果")
+        self.assertEqual(chinese_routing["target"], "works")
+        self.assertGreaterEqual(chinese_routing["graph_expand"], 3)
 
     def test_build_vector_index_and_search_works_and_chunks(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -150,6 +175,64 @@ class TestVectorSearch(unittest.TestCase):
                     )
                     self.assertGreaterEqual(len(results), 1)
                     self.assertEqual(results[0]["canonical_id"], "801")
+
+    def test_hybrid_work_search_prefers_cms_ssww_results_for_result_queries(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            with _patch_workspace(tmp):
+                db.ensure_db()
+                with db.connect() as conn:
+                    collection_id = upsert_collection(conn, {"name": "cms_ssww"})
+                    for control_number, title, abstract, collabs in [
+                        (
+                            901,
+                            "Measurements of production cross sections of polarized same-sign W boson pairs in association with two jets in proton-proton collisions at 13 TeV",
+                            "The first measurements of polarized same-sign W boson pairs are reported with the CMS detector in vector boson scattering.",
+                            [{"value": "CMS"}],
+                        ),
+                        (
+                            902,
+                            "Observation of electroweak production of same-sign W boson pairs in the two jet and two same-sign lepton final state in proton-proton collisions at 13 TeV",
+                            "CMS observes electroweak same-sign W boson pair production in association with two jets.",
+                            [{"value": "CMS"}],
+                        ),
+                        (
+                            903,
+                            "Measurement and interpretation of same-sign W boson pair production in association with two jets in pp collisions at 13 TeV with the ATLAS detector",
+                            "ATLAS measures same-sign W boson pair production in association with two jets.",
+                            [{"value": "ATLAS"}],
+                        ),
+                        (
+                            904,
+                            "Stairway to discovery: A report on the CMS programme of cross section measurements from millibarns to femtobarns",
+                            "A broad CMS cross section programme overview covering many measurements and future prospects.",
+                            [{"value": "CMS"}],
+                        ),
+                    ]:
+                        hit = {
+                            "metadata": {
+                                "control_number": control_number,
+                                "titles": [{"title": title}],
+                                "abstracts": [{"value": abstract}],
+                                "collaborations": collabs,
+                            }
+                        }
+                        upsert_work_from_hit(conn, collection_id=collection_id, hit=hit)
+
+                    rebuild_search_indices(conn, target="works")
+                    rebuild_vector_indices(conn, target="works", model=HASH_IDF_VECTOR_MODEL)
+                    conn.commit()
+
+                    rows = search_works_hybrid(
+                        conn,
+                        query="CMS current SSWW best results",
+                        collection="cms_ssww",
+                        limit=4,
+                        model=HASH_IDF_VECTOR_MODEL,
+                    )
+                    self.assertGreaterEqual(len(rows), 2)
+                    self.assertEqual(rows[0]["canonical_id"], "901")
+                    self.assertIn(rows[1]["canonical_id"], {"902", "904"})
 
     def test_cli_search_hybrid_auto_routes_broad_queries_to_work_level(self) -> None:
         with tempfile.TemporaryDirectory() as td:

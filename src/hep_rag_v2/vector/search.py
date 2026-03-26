@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from hep_rag_v2.graph import graph_neighbors
-from hep_rag_v2.query import analyze_query, is_relation_query, query_match_stats
+from hep_rag_v2.query import analyze_query, is_relation_query, is_result_query, query_match_stats
 from hep_rag_v2.search import search_chunks_bm25, search_works_bm25
 from .embedding import (
     DEFAULT_VECTOR_MODEL,
@@ -64,7 +64,7 @@ def _fetch_work_rows(conn: sqlite3.Connection, ids: list[int]) -> dict[int, dict
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"""
-        SELECT w.work_id, w.title AS raw_title, w.year, w.canonical_source, w.canonical_id
+        SELECT w.work_id, w.title AS raw_title, w.abstract, w.year, w.canonical_source, w.canonical_id
         FROM works w
         WHERE w.work_id IN ({placeholders})
         """,
@@ -359,7 +359,7 @@ def search_works_vector(
         item["rank"] = rank
         item["search_type"] = "vector"
         out.append(item)
-    out = _annotate_query_agreement(out, profile=profile, text_fields=("raw_title",))
+    out = _annotate_query_agreement(out, profile=profile, text_fields=("raw_title", "abstract"))
     out = _postprocess_vector_rows(out, profile=profile)
     return out
 
@@ -418,13 +418,13 @@ def search_works_hybrid(
     bm25_rows = _annotate_query_agreement(
         bm25_rows,
         profile=profile,
-        text_fields=("raw_title",),
+        text_fields=("raw_title", "indexed_abstract", "indexed_collaborations"),
     )
     vector_rows = search_works_vector(conn, query=query, collection=collection, limit=max(limit * 3, 50), model=model)
     vector_rows = _annotate_query_agreement(
         vector_rows,
         profile=profile,
-        text_fields=("raw_title",),
+        text_fields=("raw_title", "abstract"),
     )
     vector_rows = _filter_vector_rows(
         vector_rows,
@@ -452,9 +452,9 @@ def search_works_hybrid(
     ordered = sorted(
         fused.values(),
         key=lambda item: (
-            -float(item["hybrid_score"]),
             -int(item.get("query_group_hits") or 0),
             -float(item.get("query_group_coverage") or 0.0),
+            -float(item["hybrid_score"]),
             -float(item.get("graph_score") or 0.0),
             item["id"],
         ),
@@ -555,6 +555,13 @@ def route_query(query: str) -> dict[str, Any]:
             "target": "works",
             "graph_expand": 5,
             "reasons": [f"matched:{pattern}" for pattern in profile.relation_patterns[:4]],
+        }
+    hep_concepts = set(profile.concept_names) & {"cms", "atlas", "vbs", "same_sign_ww", "higgs", "pseudoscalar"}
+    if is_result_query(query) and (hep_concepts or len(profile.content_tokens) >= 2):
+        return {
+            "target": "works",
+            "graph_expand": 3,
+            "reasons": ["matched:result_summary", *[f"concept:{name}" for name in sorted(hep_concepts)[:3]]],
         }
     return {
         "target": "chunks",
