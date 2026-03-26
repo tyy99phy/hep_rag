@@ -40,6 +40,12 @@ pip install -e ".[local-llm]"
 
 # 可选：Chroma 向量数据库
 pip install -e ".[vectorstore]"
+
+# 可选：FastAPI 服务层
+pip install -e ".[api]"
+
+# 可选：LangChain 外壳
+pip install -e ".[langchain]"
 ```
 
 ## 快速开始
@@ -68,6 +74,10 @@ hep-rag query "eta meson rare decay branching fraction" \
 # 6. 问答（检索 + LLM 生成）
 hep-rag ask "总结 eta -> 4mu 的最新实验结果" \
   --config ./hep-rag.yaml --mode survey
+
+# 7. 启动交互式 Web/API 控制台
+hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
+# 然后打开 http://127.0.0.1:8000/ 或 http://127.0.0.1:8000/docs
 ```
 
 ## 配置
@@ -82,6 +92,12 @@ mineru:
 
 embedding:
   model: hash-idf-v1                 # 内置无依赖模型，或填 sentence-transformers 模型名
+
+api:
+  auth_token: ""                     # 为空表示不鉴权；设置后支持 Bearer / X-API-Key
+  enable_ui: true                    # 是否开放内置 Web Console
+  job_max_workers: 2
+  job_max_events: 1000
 ```
 
 ### LLM 后端
@@ -117,6 +133,19 @@ llm:
 完整字段说明见 [`config.example.yaml`](config.example.yaml)。
 
 `fetch-papers` / `ingest-online` 在在线检索阶段会先做多 query 改写，再对命中结果去重后截取 top-N；返回结果里还会带 `local_summary` 和 `local_status`，用于标记本地是否已有该 work、PDF 是否已缓存、MinerU 是否已经 materialize。
+
+## Web / API
+
+FastAPI 服务默认提供：
+
+- `/`：最小 Web 控制台，适合临时用户测试
+- `/docs`：Swagger/OpenAPI 交互文档
+- `/auth/status`、`/health`：公开状态接口
+- `/retrieve`、`/ask`、`/fetch-papers`：同步接口
+- `/jobs/ingest-online`、`/jobs/reparse-pdfs`：异步任务接口
+- `/jobs/{job_id}`、`/jobs/{job_id}/events`：任务状态与进度事件
+
+如果设置了 `api.auth_token`，除 `/`、`/ui`、`/docs`、`/openapi.json`、`/health`、`/auth/status` 之外的接口都需要带 token。内置 Web Console 支持直接输入 token；异步 job 元数据和事件会持久化到 workspace 里的 SQLite，因此服务重启后仍可查询历史任务。
 
 ## CLI 命令一览
 
@@ -186,6 +215,18 @@ hep_rag/
 │   │   ├── search.py            #   检索命令
 │   │   └── inspect.py           #   审查 / 展示命令
 │   │
+│   ├── service/                 # 服务层 payload 组装
+│   │   ├── workspace.py         #   工作区状态接口
+│   │   └── inspect.py           #   文档 / 图谱展示接口
+│   │
+│   ├── integrations/            # 外部框架适配
+│   │   └── langchain_adapter.py #   LangChain retriever / chat / tools
+│   │
+│   ├── api/                     # FastAPI 服务与内置控制台
+│   │   ├── app.py               #   FastAPI 应用入口
+│   │   ├── jobs.py              #   异步 job 管理与事件持久化
+│   │   └── static/index.html    #   最小 Web Console
+│   │
 │   └── providers/               # 外部服务适配
 │       ├── inspire.py           #   InspireHEP API
 │       ├── mineru_api.py        #   MinerU 解析 API
@@ -208,7 +249,7 @@ SQLite 数据库（`workspace/db/hep_rag_v2.db`），WAL 模式，28 张表：
 - **全文**: documents, document\_sections, blocks, formulas, assets, chunks
 - **图结构**: similarity\_edges, bibliographic\_coupling\_edges, co\_citation\_edges
 - **嵌入**: work\_embeddings, chunk\_embeddings
-- **运行记录**: collections, ingest\_runs, graph\_build\_runs
+- **运行记录**: collections, ingest\_runs, graph\_build\_runs, api\_jobs, api\_job\_events
 
 ## 工作区目录
 

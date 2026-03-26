@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
-
-import pytest
 
 from hep_rag_v2 import paths
 from hep_rag_v2.cli import build_parser
@@ -59,6 +60,9 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertTrue(config["query_rewrite"]["enabled"])
         self.assertEqual(config["query_rewrite"]["max_queries"], 4)
         self.assertIn("references", config["online"]["fields"])
+        self.assertEqual(config["api"]["job_max_workers"], 2)
+        self.assertEqual(config["api"]["job_max_events"], 1000)
+        self.assertTrue(config["api"]["enable_ui"])
 
     def test_build_search_query_only_appends_published_filter_when_requested(self) -> None:
         self.assertEqual(
@@ -106,77 +110,99 @@ class ConfigRuntimeTests(unittest.TestCase):
             LocalTransformersClient(model_name_or_path="")
 
 
-@pytest.fixture(autouse=True)
-def restore_workspace_root():
-    original = paths.workspace_root()
-    try:
-        yield
-    finally:
-        paths.set_workspace_root(original)
+class CliRuntimeTests(unittest.TestCase):
+    def test_status_honors_explicit_config_path(self) -> None:
+        original = paths.workspace_root()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                workspace_root = tmp_path / "runtime"
+                config_path = tmp_path / "hep-rag.yaml"
+                save_config(default_config(workspace_root=workspace_root), config_path)
 
+                parser = build_parser()
+                args = parser.parse_args(["status", "--config", str(config_path)])
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    args.func(args)
 
-def test_status_honors_explicit_config_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    workspace_root = tmp_path / "runtime"
-    config_path = tmp_path / "hep-rag.yaml"
-    save_config(default_config(workspace_root=workspace_root), config_path)
+                payload = json.loads(buffer.getvalue())
+                self.assertEqual(payload["snapshot"]["collections"], 0)
+                self.assertTrue((workspace_root / "db" / "hep_rag_v2.db").exists())
+                self.assertEqual(paths.workspace_root(), workspace_root.resolve())
+        finally:
+            paths.set_workspace_root(original)
 
-    parser = build_parser()
-    args = parser.parse_args(["status", "--config", str(config_path)])
-    args.func(args)
+    def test_collections_auto_loads_cwd_config(self) -> None:
+        original_root = paths.workspace_root()
+        original_cwd = Path.cwd()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                workspace_root = tmp_path / "runtime"
+                config_path = tmp_path / "hep-rag.yaml"
+                save_config(default_config(workspace_root=workspace_root), config_path)
+                collections_dir = workspace_root / "collections"
+                collections_dir.mkdir(parents=True, exist_ok=True)
+                (collections_dir / "demo.json").write_text('{"name": "demo"}\n', encoding="utf-8")
 
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["snapshot"]["collections"] == 0
-    assert (workspace_root / "db" / "hep_rag_v2.db").exists()
-    assert paths.workspace_root() == workspace_root.resolve()
+                os.chdir(tmp_path)
+                parser = build_parser()
+                args = parser.parse_args(["collections"])
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    args.func(args)
 
-def test_collections_auto_loads_cwd_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    workspace_root = tmp_path / "runtime"
-    config_path = tmp_path / "hep-rag.yaml"
-    save_config(default_config(workspace_root=workspace_root), config_path)
-    collections_dir = workspace_root / "collections"
-    collections_dir.mkdir(parents=True, exist_ok=True)
-    (collections_dir / "demo.json").write_text('{"name": "demo"}\n', encoding="utf-8")
+                self.assertEqual(buffer.getvalue().strip(), "demo")
+                self.assertEqual(paths.workspace_root(), workspace_root.resolve())
+        finally:
+            os.chdir(original_cwd)
+            paths.set_workspace_root(original_root)
 
-    monkeypatch.chdir(tmp_path)
-    parser = build_parser()
-    args = parser.parse_args(["collections"])
-    args.func(args)
+    def test_init_accepts_workspace_override_without_config(self) -> None:
+        original = paths.workspace_root()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                workspace_root = tmp_path / "custom-workspace"
 
-    assert capsys.readouterr().out.strip() == "demo"
-    assert paths.workspace_root() == workspace_root.resolve()
+                parser = build_parser()
+                args = parser.parse_args(["init", "--workspace", str(workspace_root)])
+                args.func(args)
 
+                self.assertTrue((workspace_root / "db" / "hep_rag_v2.db").exists())
+                self.assertEqual(paths.workspace_root(), workspace_root.resolve())
+        finally:
+            paths.set_workspace_root(original)
 
-def test_init_accepts_workspace_override_without_config(tmp_path: Path) -> None:
-    workspace_root = tmp_path / "custom-workspace"
+    def test_init_config_writes_collection_json(self) -> None:
+        original = paths.workspace_root()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                workspace_root = tmp_path / "runtime"
+                config_path = tmp_path / "hep-rag.yaml"
 
-    parser = build_parser()
-    args = parser.parse_args(["init", "--workspace", str(workspace_root)])
-    args.func(args)
+                parser = build_parser()
+                args = parser.parse_args(
+                    [
+                        "init-config",
+                        "--config",
+                        str(config_path),
+                        "--workspace",
+                        str(workspace_root),
+                    ]
+                )
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    args.func(args)
 
-    assert (workspace_root / "db" / "hep_rag_v2.db").exists()
-    assert paths.workspace_root() == workspace_root.resolve()
-
-
-def test_init_config_writes_collection_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    workspace_root = tmp_path / "runtime"
-    config_path = tmp_path / "hep-rag.yaml"
-
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "init-config",
-            "--config",
-            str(config_path),
-            "--workspace",
-            str(workspace_root),
-        ]
-    )
-    args.func(args)
-
-    payload = json.loads(capsys.readouterr().out)
-    collection_config = workspace_root / "collections" / "default.json"
-    assert collection_config.exists()
-    assert payload["collection"]["config_path"] == str(collection_config)
+                payload = json.loads(buffer.getvalue())
+                collection_config = workspace_root / "collections" / "default.json"
+                self.assertTrue(collection_config.exists())
+                self.assertEqual(payload["collection"]["config_path"], str(collection_config))
+        finally:
+            paths.set_workspace_root(original)
 
 
 if __name__ == "__main__":

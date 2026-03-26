@@ -97,6 +97,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "chunk_limit": 12,
         "answer_evidence_limit": 6,
     },
+    "api": {
+        "auth_token": "",
+        "enable_ui": True,
+        "job_max_workers": 2,
+        "job_max_events": 1000,
+    },
     "llm": {
         "enabled": False,
         "backend": "openai_compatible",

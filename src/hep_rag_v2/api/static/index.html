@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hep-rag Console</title>
+  <style>
+    :root {
+      --bg: #f3efe3;
+      --panel: rgba(255, 252, 244, 0.88);
+      --panel-strong: #fffaf0;
+      --ink: #162218;
+      --muted: #5c685e;
+      --line: rgba(22, 34, 24, 0.12);
+      --accent: #1f6b48;
+      --accent-2: #b14f2f;
+      --shadow: 0 18px 48px rgba(41, 52, 37, 0.12);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(220, 186, 130, 0.32), transparent 28%),
+        radial-gradient(circle at top right, rgba(55, 126, 92, 0.18), transparent 26%),
+        linear-gradient(180deg, #f8f3e7 0%, #efe9d7 100%);
+      font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+    }
+
+    .shell {
+      max-width: 1220px;
+      margin: 0 auto;
+      padding: 28px 20px 40px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .hero-card, .panel {
+      background: var(--panel);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-card {
+      padding: 22px 24px;
+      min-height: 180px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      width: 180px;
+      height: 180px;
+      right: -50px;
+      top: -60px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(31, 107, 72, 0.25), rgba(177, 79, 47, 0.05));
+      pointer-events: none;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 5vw, 48px);
+      letter-spacing: -0.04em;
+      line-height: 0.96;
+      font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
+    }
+
+    .subhead {
+      max-width: 40rem;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.6;
+      margin-bottom: 20px;
+    }
+
+    .hero-meta {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 12px;
+      background: rgba(255, 255, 255, 0.55);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+      gap: 18px;
+    }
+
+    .panel {
+      padding: 18px;
+    }
+
+    .panel h2 {
+      margin: 0 0 4px;
+      font-size: 18px;
+      font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
+    }
+
+    .panel-copy {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .full {
+      grid-column: 1 / -1;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid rgba(22, 34, 24, 0.16);
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: var(--panel-strong);
+      color: var(--ink);
+      font: inherit;
+      outline: none;
+      transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    input:focus, textarea:focus, select:focus {
+      border-color: rgba(31, 107, 72, 0.68);
+      box-shadow: 0 0 0 4px rgba(31, 107, 72, 0.12);
+      transform: translateY(-1px);
+    }
+
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 6px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 11px 16px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      color: white;
+      background: var(--accent);
+      transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
+      box-shadow: 0 10px 24px rgba(31, 107, 72, 0.22);
+    }
+
+    button.alt {
+      background: var(--accent-2);
+      box-shadow: 0 10px 24px rgba(177, 79, 47, 0.22);
+    }
+
+    button.ghost {
+      background: rgba(255,255,255,0.72);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      box-shadow: none;
+    }
+
+    button:hover { transform: translateY(-1px); }
+    button:disabled { opacity: 0.55; cursor: progress; transform: none; }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .stat {
+      padding: 16px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.62);
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 6px;
+    }
+
+    .stat-value {
+      font-size: 26px;
+      font-weight: 700;
+      font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
+    }
+
+    .status-strip {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(20, 31, 23, 0.05);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      min-height: 48px;
+    }
+
+    .log {
+      margin-top: 12px;
+      background: #182019;
+      color: #d8ebdc;
+      border-radius: 16px;
+      padding: 14px;
+      min-height: 200px;
+      max-height: 320px;
+      overflow: auto;
+      font: 12px/1.6 "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+    }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .result-frame {
+      background: rgba(255,255,255,0.62);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      min-height: 420px;
+      max-height: 760px;
+      overflow: auto;
+      font: 12px/1.6 "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+    }
+
+    .links {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    @media (max-width: 980px) {
+      .hero, .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="hero-card">
+        <h1>hep-rag<br>Console</h1>
+        <div class="subhead">
+          面向用户测试的最小交互台。可以直接预览在线文献、跑检索问答、提交在线 ingest 任务，并实时查看进度与结果。
+        </div>
+        <div class="hero-meta">
+          <div class="pill">FastAPI 服务层</div>
+          <div class="pill">LangChain 外壳可复用</div>
+          <div class="pill">INSPIRE + MinerU + Graph</div>
+        </div>
+      </div>
+      <div class="hero-card">
+        <h2>Workspace</h2>
+        <p class="panel-copy">当前服务实例绑定的工作区状态。页面加载时自动刷新，也可以手动更新；如果启用了 API token，也在这里输入。</p>
+        <div class="form-grid">
+          <div class="full">
+            <label for="api-token">API Token</label>
+            <input id="api-token" type="password" placeholder="optional bearer token">
+          </div>
+        </div>
+        <div id="auth-strip" class="status-strip">Checking auth status...</div>
+        <div class="stats" id="stats">
+          <div class="stat"><div class="stat-label">Works</div><div class="stat-value" id="stat-works">-</div></div>
+          <div class="stat"><div class="stat-label">Documents</div><div class="stat-value" id="stat-documents">-</div></div>
+          <div class="stat"><div class="stat-label">Chunks</div><div class="stat-value" id="stat-chunks">-</div></div>
+          <div class="stat"><div class="stat-label">Citations</div><div class="stat-value" id="stat-citations">-</div></div>
+        </div>
+        <div class="links">
+          <a href="/docs" target="_blank" rel="noreferrer">OpenAPI Docs</a>
+          <a href="/health" target="_blank" rel="noreferrer">Health</a>
+          <a href="/auth/status" target="_blank" rel="noreferrer">Auth Status</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Query Workbench</h2>
+        <p class="panel-copy">一套输入，直接驱动在线预览、检索、问答和异步 ingest。</p>
+        <div class="form-grid">
+          <div class="full">
+            <label for="query">Query</label>
+            <textarea id="query">CMS VBS SSWW</textarea>
+          </div>
+          <div>
+            <label for="collection">Collection</label>
+            <input id="collection" placeholder="default">
+          </div>
+          <div>
+            <label for="limit">Limit</label>
+            <input id="limit" type="number" min="1" value="8">
+          </div>
+          <div>
+            <label for="target">Target</label>
+            <select id="target">
+              <option value="">auto</option>
+              <option value="works">works</option>
+              <option value="chunks">chunks</option>
+            </select>
+          </div>
+          <div>
+            <label for="mode">Ask Mode</label>
+            <select id="mode">
+              <option value="answer">answer</option>
+              <option value="survey">survey</option>
+              <option value="idea">idea</option>
+            </select>
+          </div>
+          <div>
+            <label for="download-limit">Download Limit</label>
+            <input id="download-limit" type="number" min="1" placeholder="optional">
+          </div>
+          <div>
+            <label for="parse-limit">Parse Limit</label>
+            <input id="parse-limit" type="number" min="0" placeholder="optional">
+          </div>
+        </div>
+        <div class="actions">
+          <button id="fetch-btn">Fetch Papers</button>
+          <button id="retrieve-btn" class="ghost">Retrieve</button>
+          <button id="ask-btn">Ask</button>
+          <button id="ingest-btn" class="alt">Start Ingest Job</button>
+          <button id="refresh-status-btn" class="ghost">Refresh Workspace</button>
+        </div>
+        <div id="status-strip" class="status-strip">Ready.</div>
+        <div class="log"><pre id="job-log">No active job.</pre></div>
+      </div>
+
+      <div class="panel">
+        <h2>Result</h2>
+        <p class="panel-copy">所有接口都以结构化 JSON 回显，方便你直接观察真实 API 行为。</p>
+        <div class="result-frame"><pre id="result">Loading workspace status...</pre></div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const TOKEN_STORAGE_KEY = "hep-rag-api-token";
+    const state = {
+      currentJobId: null,
+      pollTimer: null,
+      lastEventSeq: 0,
+      authEnabled: false,
+    };
+
+    const resultEl = document.getElementById("result");
+    const logEl = document.getElementById("job-log");
+    const statusEl = document.getElementById("status-strip");
+    const authStatusEl = document.getElementById("auth-strip");
+    const tokenInputEl = document.getElementById("api-token");
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function setResult(data) {
+      resultEl.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    }
+
+    function appendLog(line) {
+      const prefix = logEl.textContent === "No active job." ? "" : logEl.textContent + "\n";
+      logEl.textContent = prefix + line;
+      logEl.parentElement.scrollTop = logEl.parentElement.scrollHeight;
+    }
+
+    function resetLog() {
+      logEl.textContent = "";
+    }
+
+    function readToken() {
+      return tokenInputEl.value.trim();
+    }
+
+    function readBasePayload() {
+      return {
+        query: document.getElementById("query").value.trim(),
+        collection_name: blankToNull(document.getElementById("collection").value),
+        limit: parseOptionalInt(document.getElementById("limit").value),
+        target: blankToNull(document.getElementById("target").value),
+      };
+    }
+
+    function parseOptionalInt(value) {
+      const text = String(value || "").trim();
+      return text ? Number(text) : null;
+    }
+
+    function blankToNull(value) {
+      const text = String(value || "").trim();
+      return text ? text : null;
+    }
+
+    function buildAuthHeaders() {
+      const token = readToken();
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+
+    async function callJson(url, options = {}) {
+      const headers = {
+        "Content-Type": "application/json",
+        ...buildAuthHeaders(),
+        ...(options.headers || {}),
+      };
+      const response = await fetch(url, {
+        headers,
+        ...options,
+      });
+      const data = await response.json().catch(() => ({ detail: "Invalid JSON response" }));
+      if (!response.ok) {
+        throw new Error(data.detail || `HTTP ${response.status}`);
+      }
+      return data;
+    }
+
+    async function refreshAuthStatus() {
+      try {
+        const data = await callJson("/auth/status");
+        state.authEnabled = !!data.auth_enabled;
+        authStatusEl.textContent = data.auth_enabled
+          ? "Auth enabled. Private endpoints require the token above."
+          : "Auth disabled. This console can call private endpoints directly.";
+      } catch (error) {
+        authStatusEl.textContent = `Auth status unavailable: ${error.message}`;
+      }
+    }
+
+    async function refreshWorkspace() {
+      if (state.authEnabled && !readToken()) {
+        setStatus("API token required before loading private workspace data.");
+        return;
+      }
+      setStatus("Refreshing workspace status...");
+      try {
+        const data = await callJson("/workspace/status");
+        document.getElementById("stat-works").textContent = data.snapshot.works ?? "-";
+        document.getElementById("stat-documents").textContent = data.snapshot.documents ?? "-";
+        document.getElementById("stat-chunks").textContent = data.snapshot.chunks ?? "-";
+        document.getElementById("stat-citations").textContent = data.snapshot.citations ?? "-";
+        setStatus("Workspace status updated.");
+      } catch (error) {
+        setStatus(`Workspace refresh failed: ${error.message}`);
+      }
+    }
+
+    async function fetchPapers() {
+      const payload = readBasePayload();
+      if (!payload.query) return setStatus("Query is required.");
+      if (state.authEnabled && !readToken()) return setStatus("API token required.");
+      setStatus("Fetching online paper candidates...");
+      try {
+        const data = await callJson("/fetch-papers", {
+          method: "POST",
+          body: JSON.stringify({ query: payload.query, limit: payload.limit || 8 }),
+        });
+        setResult(data);
+        setStatus(`Fetched ${data.effective_count ?? 0} candidate papers.`);
+      } catch (error) {
+        setStatus(`Fetch failed: ${error.message}`);
+      }
+    }
+
+    async function retrieveEvidence() {
+      const payload = readBasePayload();
+      if (!payload.query) return setStatus("Query is required.");
+      if (state.authEnabled && !readToken()) return setStatus("API token required.");
+      setStatus("Running retrieval...");
+      try {
+        const data = await callJson("/retrieve", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        setResult(data);
+        setStatus(`Retrieved ${data.works?.length ?? 0} works and ${data.evidence_chunks?.length ?? 0} chunks.`);
+      } catch (error) {
+        setStatus(`Retrieve failed: ${error.message}`);
+      }
+    }
+
+    async function askQuestion() {
+      const payload = readBasePayload();
+      if (!payload.query) return setStatus("Query is required.");
+      if (state.authEnabled && !readToken()) return setStatus("API token required.");
+      payload.mode = document.getElementById("mode").value;
+      setStatus("Generating answer...");
+      try {
+        const data = await callJson("/ask", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        setResult(data);
+        setStatus("Answer generation finished.");
+      } catch (error) {
+        setStatus(`Ask failed: ${error.message}`);
+      }
+    }
+
+    async function startIngestJob() {
+      const payload = readBasePayload();
+      if (!payload.query) return setStatus("Query is required.");
+      if (state.authEnabled && !readToken()) return setStatus("API token required.");
+      payload.download_limit = parseOptionalInt(document.getElementById("download-limit").value);
+      payload.parse_limit = parseOptionalInt(document.getElementById("parse-limit").value);
+      setStatus("Submitting ingest job...");
+      try {
+        const data = await callJson("/jobs/ingest-online", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        state.currentJobId = data.job_id;
+        state.lastEventSeq = 0;
+        resetLog();
+        appendLog(`[job ${data.job_id}] queued`);
+        setResult(data);
+        setStatus(`Ingest job submitted: ${data.job_id}`);
+        startJobPolling();
+      } catch (error) {
+        setStatus(`Ingest submission failed: ${error.message}`);
+      }
+    }
+
+    function startJobPolling() {
+      if (!state.currentJobId) return;
+      if (state.pollTimer) window.clearInterval(state.pollTimer);
+      state.pollTimer = window.setInterval(async () => {
+        try {
+          const [job, eventPayload] = await Promise.all([
+            callJson(`/jobs/${state.currentJobId}`),
+            callJson(`/jobs/${state.currentJobId}/events?after=${state.lastEventSeq}`),
+          ]);
+          for (const event of eventPayload.events || []) {
+            state.lastEventSeq = Math.max(state.lastEventSeq, event.seq || 0);
+            appendLog(`[${event.type}] ${event.message}`);
+          }
+          setResult(job);
+          if (job.status === "succeeded" || job.status === "failed") {
+            window.clearInterval(state.pollTimer);
+            state.pollTimer = null;
+            setStatus(`Job ${job.status}.`);
+            if (job.status === "succeeded") {
+              refreshWorkspace();
+            }
+          }
+        } catch (error) {
+          window.clearInterval(state.pollTimer);
+          state.pollTimer = null;
+          setStatus(`Job polling failed: ${error.message}`);
+        }
+      }, 1000);
+    }
+
+    document.getElementById("fetch-btn").addEventListener("click", fetchPapers);
+    document.getElementById("retrieve-btn").addEventListener("click", retrieveEvidence);
+    document.getElementById("ask-btn").addEventListener("click", askQuestion);
+    document.getElementById("ingest-btn").addEventListener("click", startIngestJob);
+    document.getElementById("refresh-status-btn").addEventListener("click", refreshWorkspace);
+    tokenInputEl.value = window.localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+    tokenInputEl.addEventListener("input", () => {
+      window.localStorage.setItem(TOKEN_STORAGE_KEY, readToken());
+    });
+    tokenInputEl.addEventListener("change", () => {
+      if (!state.authEnabled || readToken()) {
+        refreshWorkspace();
+      }
+    });
+
+    (async () => {
+      await refreshAuthStatus();
+      if (!state.authEnabled || readToken()) {
+        await refreshWorkspace();
+      } else {
+        setResult("Auth is enabled. Enter the API token above to use private endpoints.");
+        setStatus("Waiting for API token.");
+      }
+    })();
+  </script>
+</body>
+</html>

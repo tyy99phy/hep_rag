@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from hep_rag_v2.db import connect, ensure_db
-from hep_rag_v2.graph import graph_neighbors, rebuild_graph_edges
+from hep_rag_v2.graph import rebuild_graph_edges
 from hep_rag_v2.search import (
     rebuild_search_indices,
     search_assets_bm25,
@@ -13,6 +13,7 @@ from hep_rag_v2.search import (
     search_formulas_bm25,
     search_works_bm25,
 )
+from hep_rag_v2.service.inspect import show_graph_payload
 from hep_rag_v2.vector import (
     DEFAULT_VECTOR_MODEL,
     rebuild_vector_indices,
@@ -27,7 +28,7 @@ from hep_rag_v2.vector import (
     vector_index_counts,
 )
 
-from ._common import _resolve_work_row, emit_cli_status
+from ._common import emit_cli_status
 
 
 def cmd_build_search_index(args: argparse.Namespace) -> None:
@@ -203,32 +204,13 @@ def cmd_build_graph(args: argparse.Namespace) -> None:
 
 
 def cmd_show_graph(args: argparse.Namespace) -> None:
-    ensure_db()
-    with connect() as conn:
-        work = dict(_resolve_work_row(
-            conn,
-            work_id=args.work_id,
-            id_type=args.id_type,
-            id_value=args.id_value,
-        ))
-        neighbors = graph_neighbors(
-            conn,
-            work_id=int(work["work_id"]),
-            edge_kind=args.edge_kind,
-            collection=args.collection,
-            limit=args.limit,
-            similarity_model=args.model if args.edge_kind == "similarity" else None,
-        )
-    payload = {
-        "work": {
-            "work_id": int(work["work_id"]),
-            "canonical_source": work["canonical_source"],
-            "canonical_id": work["canonical_id"],
-            "title": work["title"],
-            "year": work["year"],
-        },
-        "edge_kind": args.edge_kind,
-        "collection": args.collection,
-        "neighbors": neighbors,
-    }
+    payload = show_graph_payload(
+        work_id=args.work_id,
+        id_type=args.id_type,
+        id_value=args.id_value,
+        edge_kind=args.edge_kind,
+        collection=args.collection,
+        limit=args.limit,
+        similarity_model=args.model if args.edge_kind == "similarity" else None,
+    )
     print(json.dumps(payload, ensure_ascii=False, indent=2))

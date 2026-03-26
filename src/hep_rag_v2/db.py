@@ -45,6 +45,39 @@ def ensure_db() -> None:
 
 
 def _ensure_schema_upgrades(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_jobs (
+          job_id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          status TEXT NOT NULL,
+          request_json TEXT,
+          result_json TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          started_at TEXT,
+          finished_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_job_events (
+          job_id TEXT NOT NULL,
+          seq INTEGER NOT NULL,
+          event_type TEXT NOT NULL,
+          level TEXT NOT NULL,
+          message TEXT NOT NULL,
+          payload_json TEXT,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (job_id, seq),
+          FOREIGN KEY (job_id) REFERENCES api_jobs(job_id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_api_jobs_status ON api_jobs(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_api_job_events_job ON api_job_events(job_id, seq)")
     _ensure_columns(
         conn,
         "document_sections",

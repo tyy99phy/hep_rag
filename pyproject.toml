@@ -24,10 +24,18 @@ local-llm = [
 vectorstore = [
   "chromadb>=0.5",
 ]
+langchain = [
+  "langchain-core>=0.3",
+]
+api = [
+  "fastapi>=0.110",
+  "uvicorn>=0.30",
+]
 
 [project.scripts]
 hepv2 = "hep_rag_v2.cli:main"
 hep-rag = "hep_rag_v2.cli:main"
+hep-rag-api = "hep_rag_v2.api:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -36,7 +44,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-hep_rag_v2 = ["schema.sql"]
+hep_rag_v2 = ["schema.sql", "api/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
