@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+hep-rag.yaml
+hep-rag.yml
+hep-rag.json
 .pytest_cache/
 .tmp-validation/
 build/

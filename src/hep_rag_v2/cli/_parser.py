@@ -104,12 +104,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_ask)
 
     s = sub.add_parser("init", help="Initialize local database and directories")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.set_defaults(func=cmd_init)
 
     s = sub.add_parser("collections", help="List available collection configs")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.set_defaults(func=cmd_collections)
 
     s = sub.add_parser("status", help="Show metadata graph snapshot")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.set_defaults(func=cmd_status)
 
     s = sub.add_parser("ingest-metadata", help="Ingest INSPIRE metadata into the graph schema")

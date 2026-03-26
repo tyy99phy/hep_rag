@@ -12,17 +12,37 @@ from hep_rag_v2.search import search_index_counts
 from hep_rag_v2.vector import vector_index_counts
 
 
-def cmd_init(_: argparse.Namespace) -> None:
+def _maybe_apply_workspace_config(args: argparse.Namespace) -> None:
+    config_path = getattr(args, "config", None)
+    workspace_root = getattr(args, "workspace", None)
+
+    if config_path is not None:
+        apply_runtime_config(config_path=config_path, workspace_root=workspace_root)
+        return
+
+    resolved_default = resolve_config_path(None)
+    if resolved_default.exists():
+        apply_runtime_config(config_path=resolved_default, workspace_root=workspace_root)
+        return
+
+    if workspace_root:
+        paths.set_workspace_root(Path(workspace_root).expanduser().resolve())
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    _maybe_apply_workspace_config(args)
     ensure_db()
     print(f"Initialized DB at {paths.DB_PATH}")
 
 
-def cmd_collections(_: argparse.Namespace) -> None:
+def cmd_collections(args: argparse.Namespace) -> None:
+    _maybe_apply_workspace_config(args)
     for path in sorted(paths.COLLECTIONS_DIR.glob("*.json")):
         print(path.stem)
 
 
-def cmd_status(_: argparse.Namespace) -> None:
+def cmd_status(args: argparse.Namespace) -> None:
+    _maybe_apply_workspace_config(args)
     ensure_db()
     with connect() as conn:
         snapshot = dict(

@@ -818,6 +818,11 @@ def _hit_local_status(
 def initialize_workspace(config: dict[str, Any], *, collection_name: str | None = None) -> dict[str, Any]:
     ensure_db()
     collection_payload = runtime_collection_config(config, name=collection_name)
+    collection_config_path = paths.COLLECTIONS_DIR / f"{collection_payload['name']}.json"
+    collection_config_path.write_text(
+        json.dumps(collection_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     with connect() as conn:
         collection_id = upsert_collection(conn, collection_payload)
         snapshot = _snapshot(conn)
@@ -828,6 +833,7 @@ def initialize_workspace(config: dict[str, Any], *, collection_name: str | None 
             "collection_id": collection_id,
             "name": collection_payload["name"],
             "label": collection_payload["label"],
+            "config_path": str(collection_config_path),
         },
         "snapshot": snapshot,
     }
