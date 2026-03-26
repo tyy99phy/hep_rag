@@ -3,9 +3,11 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
+
+ProgressCallback = Callable[[str], None] | None
 
 
 @dataclass(frozen=True)
@@ -46,22 +48,38 @@ class MinerUClient:
             raise ValueError("MinerU api_token is required.")
 
 
-    def submit_local_pdf(self, pdf_path: Path, *, data_id: str | None = None) -> MinerUTaskResult:
+    def submit_local_pdf(
+        self,
+        pdf_path: Path,
+        *,
+        data_id: str | None = None,
+        progress: ProgressCallback = None,
+    ) -> MinerUTaskResult:
+        self._emit_progress(progress, f"creating MinerU batch for {pdf_path.name}...")
         upload_meta = self._create_batch_upload(pdf_path=pdf_path, data_id=data_id)
         urls = list(upload_meta["file_urls"])
         if not urls:
             raise RuntimeError("MinerU returned no upload URLs.")
+        self._emit_progress(progress, f"created batch {upload_meta['batch_id']}; uploading PDF...")
         self._upload_binary(urls[0], pdf_path)
-        result = self._poll_batch(batch_id=str(upload_meta["batch_id"]))
+        self._emit_progress(progress, "upload complete; polling parse status...")
+        result = self._poll_batch(batch_id=str(upload_meta["batch_id"]), progress=progress)
         if result.state != "done":
             raise RuntimeError(f"MinerU parse did not finish successfully: state={result.state}")
         return result
 
 
-    def download_result_zip(self, task: MinerUTaskResult, *, output_path: Path) -> Path:
+    def download_result_zip(
+        self,
+        task: MinerUTaskResult,
+        *,
+        output_path: Path,
+        progress: ProgressCallback = None,
+    ) -> Path:
         if not task.full_zip_url:
             raise ValueError("MinerU task has no full_zip_url.")
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._emit_progress(progress, f"downloading parsed bundle to {output_path.name}...")
         with requests.get(task.full_zip_url, timeout=self.timeout_sec, stream=True) as response:
             response.raise_for_status()
             temp_path = output_path.with_suffix(output_path.suffix + ".part")
@@ -70,6 +88,7 @@ class MinerUClient:
                     if chunk:
                         handle.write(chunk)
             temp_path.replace(output_path)
+        self._emit_progress(progress, f"parsed bundle saved to {output_path.name}.")
         return output_path
 
 
@@ -118,10 +137,14 @@ class MinerUClient:
         response.raise_for_status()
 
 
-    def _poll_batch(self, *, batch_id: str) -> MinerUTaskResult:
+    def _poll_batch(self, *, batch_id: str, progress: ProgressCallback = None) -> MinerUTaskResult:
         url = f"{self.api_base}/extract-results/batch/{batch_id}"
-        deadline = time.monotonic() + float(self.max_wait_sec)
+        started_at = time.monotonic()
+        deadline = started_at + float(self.max_wait_sec)
         last_payload: dict[str, Any] | None = None
+        last_state: str | None = None
+        last_report_at = started_at
+        report_interval = max(30.0, float(self.poll_interval_sec) * 3.0)
 
         while time.monotonic() <= deadline:
             try:
@@ -132,10 +155,27 @@ class MinerUClient:
                 if _payload_code(payload) != 0:
                     raise RuntimeError(f"MinerU batch status failed: {payload}")
                 result = _extract_result(payload)
+                now = time.monotonic()
+                elapsed = int(now - started_at)
+                if (
+                    last_state is None
+                    or result.state != last_state
+                    or now - last_report_at >= report_interval
+                ):
+                    self._emit_progress(
+                        progress,
+                        f"batch {batch_id} state={result.state} elapsed={elapsed}s",
+                    )
+                    last_report_at = now
+                last_state = result.state
                 if result.state in {"done", "failed"}:
                     return result
             except requests.RequestException as exc:
                 last_payload = {"request_error": str(exc)}
+                now = time.monotonic()
+                if now - last_report_at >= report_interval:
+                    self._emit_progress(progress, f"batch {batch_id} request error: {exc}")
+                    last_report_at = now
             time.sleep(self.poll_interval_sec)
 
         raise TimeoutError(f"MinerU batch polling timed out: batch_id={batch_id}, last_payload={last_payload}")
@@ -146,6 +186,15 @@ class MinerUClient:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_token}",
         }
+
+
+    @staticmethod
+    def _emit_progress(progress: ProgressCallback, message: str) -> None:
+        if progress is None:
+            return
+        text = str(message or "").strip()
+        if text:
+            progress(text)
 
 
 def _extract_result(payload: dict[str, Any]) -> MinerUTaskResult:

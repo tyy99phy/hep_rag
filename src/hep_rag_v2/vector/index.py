@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -17,6 +17,9 @@ from .embedding import (
     _safe_stem,
     _validate_model,
 )
+
+
+ProgressCallback = Callable[[str], None] | None
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +51,7 @@ def rebuild_vector_indices(
     model: str = DEFAULT_VECTOR_MODEL,
     dim: int = DEFAULT_VECTOR_DIM,
     force: bool = True,
+    progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     _validate_model(model)
     if dim <= 0:
@@ -68,16 +72,39 @@ def rebuild_vector_indices(
     vector_dir.mkdir(parents=True, exist_ok=True)
 
     if target in {"all", "works"}:
+        work_source_count = int(conn.execute("SELECT COUNT(*) FROM works").fetchone()[0])
+        _emit_progress(progress, f"building work vector index for {work_source_count} works with model={model}...")
         work_path, work_count, work_dim = _rebuild_work_vector_index(conn, model=model, dim=dim, force=force)
         summary["works"] = work_count
         summary["dim"] = work_dim
         summary["work_vector_path"] = str(work_path)
+        _emit_progress(progress, f"work vector index ready: {work_count} works -> {work_path.name}")
     if target in {"all", "chunks"}:
+        chunk_source_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM chunks
+                WHERE is_retrievable = 1
+                  AND COALESCE(clean_text, '') <> ''
+                """
+            ).fetchone()[0]
+        )
+        _emit_progress(progress, f"building chunk vector index for {chunk_source_count} chunks with model={model}...")
         chunk_path, chunk_count, chunk_dim = _rebuild_chunk_vector_index(conn, model=model, dim=dim, force=force)
         summary["chunks"] = chunk_count
         summary["dim"] = chunk_dim
         summary["chunk_vector_path"] = str(chunk_path)
+        _emit_progress(progress, f"chunk vector index ready: {chunk_count} chunks -> {chunk_path.name}")
     return summary
+
+
+def _emit_progress(progress: ProgressCallback, message: str) -> None:
+    if progress is None:
+        return
+    text = str(message or "").strip()
+    if text:
+        progress(text)
 
 
 # ---------------------------------------------------------------------------

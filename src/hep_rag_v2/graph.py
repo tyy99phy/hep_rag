@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
 
 DEFAULT_SIMILARITY_MODEL = "hash-idf-v1"
+ProgressCallback = Callable[[str], None] | None
 
 
 def rebuild_graph_edges(
@@ -20,6 +21,7 @@ def rebuild_graph_edges(
     similarity_model: str = DEFAULT_SIMILARITY_MODEL,
     similarity_top_k: int = 10,
     similarity_min_score: float = 0.35,
+    progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     collection_id = _collection_id(conn, collection) if collection else None
     summary = {
@@ -36,6 +38,7 @@ def rebuild_graph_edges(
     }
 
     if target in {"all", "bibliographic-coupling"}:
+        _emit_progress(progress, "building bibliographic coupling edges...")
         build_id = _start_graph_build(
             conn,
             build_kind="bibliographic_coupling",
@@ -51,11 +54,13 @@ def rebuild_graph_edges(
             _finish_graph_build(conn, build_id=build_id, status="completed", notes=f"edges={count}")
             summary["bibliographic_coupling_edges"] = count
             summary["build_ids"].append(build_id)
+            _emit_progress(progress, f"bibliographic coupling edges ready: {count}")
         except Exception as exc:
             _finish_graph_build(conn, build_id=build_id, status="failed", notes=f"{type(exc).__name__}: {exc}")
             raise
 
     if target in {"all", "co-citation"}:
+        _emit_progress(progress, "building co-citation edges...")
         build_id = _start_graph_build(
             conn,
             build_kind="co_citation",
@@ -71,11 +76,16 @@ def rebuild_graph_edges(
             _finish_graph_build(conn, build_id=build_id, status="completed", notes=f"edges={count}")
             summary["co_citation_edges"] = count
             summary["build_ids"].append(build_id)
+            _emit_progress(progress, f"co-citation edges ready: {count}")
         except Exception as exc:
             _finish_graph_build(conn, build_id=build_id, status="failed", notes=f"{type(exc).__name__}: {exc}")
             raise
 
     if target in {"all", "similarity"} and (target == "similarity" or _has_work_vectors(conn, model=similarity_model)):
+        _emit_progress(
+            progress,
+            f"building similarity edges with model={similarity_model}, top_k={similarity_top_k}, min_score={similarity_min_score}...",
+        )
         build_id = _start_graph_build(
             conn,
             build_kind="embedding_similarity",
@@ -101,12 +111,22 @@ def rebuild_graph_edges(
             _finish_graph_build(conn, build_id=build_id, status="completed", notes=f"edges={count}")
             summary["similarity_edges"] = count
             summary["build_ids"].append(build_id)
+            _emit_progress(progress, f"similarity edges ready: {count}")
         except Exception as exc:
             _finish_graph_build(conn, build_id=build_id, status="failed", notes=f"{type(exc).__name__}: {exc}")
             raise
     elif target in {"all", "similarity"}:
         summary["similarity_skipped"] = f"work embedding index not found for model={similarity_model}"
+        _emit_progress(progress, summary["similarity_skipped"])
     return summary
+
+
+def _emit_progress(progress: ProgressCallback, message: str) -> None:
+    if progress is None:
+        return
+    text = str(message or "").strip()
+    if text:
+        progress(text)
 
 
 def graph_neighbors(

@@ -27,7 +27,7 @@ from hep_rag_v2.vector import (
     vector_index_counts,
 )
 
-from ._common import _resolve_work_row
+from ._common import _resolve_work_row, emit_cli_status
 
 
 def cmd_build_search_index(args: argparse.Namespace) -> None:
@@ -35,9 +35,11 @@ def cmd_build_search_index(args: argparse.Namespace) -> None:
     from hep_rag_v2.search import search_index_counts
 
     with connect() as conn:
+        emit_cli_status(f"building BM25 search indexes for target={args.target}...")
         summary = rebuild_search_indices(conn, target=args.target)
         conn.commit()
         summary.update(search_index_counts(conn))
+        emit_cli_status("BM25 search indexes ready.")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
@@ -60,14 +62,17 @@ def cmd_build_vector_index(args: argparse.Namespace) -> None:
     ensure_db()
     try:
         with connect() as conn:
+            emit_cli_status(f"building vector indexes for target={args.target} with model={args.model}...")
             summary = rebuild_vector_indices(
                 conn,
                 target=args.target,
                 model=args.model,
                 dim=args.dim,
+                progress=emit_cli_status,
             )
             conn.commit()
             summary.update(vector_index_counts(conn))
+            emit_cli_status("vector index build finished.")
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -113,6 +118,7 @@ def cmd_sync_chroma_index(args: argparse.Namespace) -> None:
     ensure_db()
     try:
         with connect() as conn:
+            emit_cli_status(f"syncing Chroma index for target={args.target} with model={args.model}...")
             summary = sync_chroma_indices(
                 conn,
                 target=args.target,
@@ -121,6 +127,7 @@ def cmd_sync_chroma_index(args: argparse.Namespace) -> None:
                 chroma_dir=Path(args.chroma_dir).expanduser().resolve() if args.chroma_dir else None,
                 batch_size=args.batch_size,
             )
+            emit_cli_status("Chroma sync finished.")
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -177,6 +184,7 @@ def cmd_build_graph(args: argparse.Namespace) -> None:
     ensure_db()
     try:
         with connect() as conn:
+            emit_cli_status(f"building graph edges for target={args.target}...")
             summary = rebuild_graph_edges(
                 conn,
                 target=args.target,
@@ -185,8 +193,10 @@ def cmd_build_graph(args: argparse.Namespace) -> None:
                 similarity_model=args.model,
                 similarity_top_k=args.top_k,
                 similarity_min_score=args.min_score,
+                progress=emit_cli_status,
             )
             conn.commit()
+            emit_cli_status("graph build finished.")
     except (RuntimeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(summary, ensure_ascii=False, indent=2))

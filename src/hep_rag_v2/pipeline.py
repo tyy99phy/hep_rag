@@ -101,6 +101,47 @@ def _emit_progress(progress: ProgressCallback, message: str) -> None:
         progress(message)
 
 
+def _truncate_progress_text(value: Any, *, limit: int = 80) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _paper_progress_label(
+    *,
+    index: int | None,
+    total: int | None,
+    work_id: int,
+    title: str | None,
+) -> str:
+    parts: list[str] = []
+    if index is not None and total is not None:
+        parts.append(f"{index}/{total}")
+    parts.append(f"work_id={work_id}")
+    title_text = _truncate_progress_text(title, limit=72)
+    if title_text:
+        parts.append(f'title="{title_text}"')
+    return " ".join(parts)
+
+
+def _prefixed_progress(progress: ProgressCallback, prefix: str) -> ProgressCallback:
+    if progress is None:
+        return None
+    label = str(prefix or "").strip()
+    if not label:
+        return progress
+
+    def _callback(message: str) -> None:
+        text = str(message or "").strip()
+        if text:
+            progress(f"{label}: {text}")
+
+    return _callback
+
+
 def _search_online_hits(
     config: dict[str, Any],
     *,
@@ -998,8 +1039,26 @@ def ingest_online(
                         ): task
                         for task in download_tasks
                     }
-                    for future in as_completed(futures):
-                        download_results.append(future.result())
+                    for idx, future in enumerate(as_completed(futures), start=1):
+                        task = futures[future]
+                        pdf_info = future.result()
+                        download_results.append(pdf_info)
+                        label = _paper_progress_label(
+                            index=idx,
+                            total=len(download_tasks),
+                            work_id=int(task["work_id"]),
+                            title=str(pdf_info.get("title") or task.get("title") or ""),
+                        )
+                        if pdf_info["ok"]:
+                            source = str(pdf_info.get("source") or "downloaded")
+                            _emit_progress(progress, f"downloaded PDF {label} source={source}")
+                        else:
+                            errors = pdf_info.get("errors") or []
+                            detail = _truncate_progress_text(
+                                errors[0] if errors else "no PDF candidate succeeded",
+                                limit=140,
+                            )
+                            _emit_progress(progress, f"failed PDF download {label}: {detail}")
 
             summary["downloads"]["attempted"] = len(download_results)
             for pdf_info in download_results:
@@ -1008,18 +1067,38 @@ def ingest_online(
                     summary["downloads"]["ok"] += 1
                 else:
                     summary["downloads"]["failed"] += 1
+            if download_tasks:
+                _emit_progress(
+                    progress,
+                    "PDF download phase finished: "
+                    f"{summary['downloads']['ok']}/{summary['downloads']['attempted']} succeeded, "
+                    f"{summary['downloads']['failed']} failed.",
+                )
 
             # Phase 3: MinerU parse (sequential, in DB transaction)
-            parse_count = 0
-            if parse_cap > 0 and mineru_client is not None:
-                _emit_progress(progress, f"parsing up to {parse_cap} PDFs with MinerU...")
-            for pdf_info in download_results:
-                if not pdf_info["ok"] or parse_count >= parse_cap or mineru_client is None:
-                    continue
-
-                parse_count += 1
+            parse_queue = (
+                [
+                    pdf_info
+                    for pdf_info in download_results
+                    if pdf_info["ok"]
+                ][: max(0, parse_cap)]
+                if mineru_client is not None
+                else []
+            )
+            if parse_cap > 0 and mineru_client is None:
+                _emit_progress(progress, "MinerU is disabled; skipping PDF parsing.")
+            elif parse_cap > 0 and parse_queue:
+                _emit_progress(progress, f"parsing {len(parse_queue)} PDFs with MinerU...")
+            for idx, pdf_info in enumerate(parse_queue, start=1):
                 summary["mineru"]["attempted"] += 1
+                label = _paper_progress_label(
+                    index=idx,
+                    total=len(parse_queue),
+                    work_id=int(pdf_info["work_id"]),
+                    title=str(pdf_info.get("title") or ""),
+                )
                 try:
+                    _emit_progress(progress, f"starting MinerU parse for {label}...")
                     parsed = _parse_with_mineru(
                         conn,
                         config=config,
@@ -1028,9 +1107,14 @@ def ingest_online(
                         pdf_path=Path(pdf_info["path"]),
                         collection_name=collection_payload["name"],
                         replace_existing=replace_existing,
+                        progress=_prefixed_progress(progress, f"MinerU {label}"),
                     )
                     summary["mineru"]["materialized"] += 1
                     summary["mineru"]["items"].append(parsed)
+                    _emit_progress(
+                        progress,
+                        f"finished MinerU parse for {label} state={parsed.get('state') or 'materialized'}",
+                    )
                 except Exception as exc:
                     summary["mineru"]["failed"] += 1
                     _mark_document_parse_failed(
@@ -1047,10 +1131,22 @@ def ingest_online(
                             "error": str(exc),
                         }
                     )
+                    _emit_progress(
+                        progress,
+                        f"MinerU parse failed for {label}: {_truncate_progress_text(exc, limit=160)}",
+                    )
+            if parse_cap > 0 and mineru_client is not None:
+                _emit_progress(
+                    progress,
+                    "MinerU phase finished: "
+                    f"{summary['mineru']['materialized']}/{summary['mineru']['attempted']} succeeded, "
+                    f"{summary['mineru']['failed']} failed.",
+                )
 
             if not skip_index:
                 _emit_progress(progress, "building BM25 search indexes...")
                 summary["search"] = rebuild_search_indices(conn, target="all")
+                _emit_progress(progress, "BM25 search indexes ready.")
                 if bool(embedding_cfg.get("build_after_ingest", True)):
                     try:
                         _emit_progress(progress, "building vector indexes...")
@@ -1059,9 +1155,12 @@ def ingest_online(
                             target="all",
                             model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
                             dim=int(embedding_cfg.get("dim") or 768),
+                            progress=progress,
                         )
+                        _emit_progress(progress, "vector indexes ready.")
                     except Exception as exc:
                         summary["vectors"] = {"ok": False, "error": str(exc)}
+                        _emit_progress(progress, f"vector index build failed: {_truncate_progress_text(exc, limit=160)}")
             if not skip_graph:
                 try:
                     _emit_progress(progress, "building graph edges...")
@@ -1070,9 +1169,12 @@ def ingest_online(
                         target="all",
                         collection=collection_payload["name"],
                         similarity_model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
+                        progress=progress,
                     )
+                    _emit_progress(progress, "graph edges ready.")
                 except Exception as exc:
                     summary["graph"] = {"ok": False, "error": str(exc)}
+                    _emit_progress(progress, f"graph build failed: {_truncate_progress_text(exc, limit=160)}")
 
             _finish_ingest_run(
                 conn,
@@ -1147,9 +1249,16 @@ def reparse_cached_pdfs(
         summary["candidates_seen"] = len(candidates)
         if candidates:
             _emit_progress(progress, f"reparsing {len(candidates)} cached PDFs with MinerU...")
-        for candidate in candidates:
+        for idx, candidate in enumerate(candidates, start=1):
             summary["attempted"] += 1
+            label = _paper_progress_label(
+                index=idx,
+                total=len(candidates),
+                work_id=int(candidate["work_id"]),
+                title=str(candidate["title"] or ""),
+            )
             try:
+                _emit_progress(progress, f"starting MinerU reparse for {label}...")
                 parsed = _parse_with_mineru(
                     conn,
                     config=config,
@@ -1158,9 +1267,14 @@ def reparse_cached_pdfs(
                     pdf_path=Path(str(candidate["pdf_path"])),
                     collection_name=collection_payload["name"],
                     replace_existing=replace_existing,
+                    progress=_prefixed_progress(progress, f"MinerU {label}"),
                 )
                 summary["materialized"] += 1
                 summary["items"].append(parsed)
+                _emit_progress(
+                    progress,
+                    f"finished MinerU reparse for {label} state={parsed.get('state') or 'materialized'}",
+                )
             except Exception as exc:
                 summary["failed"] += 1
                 _mark_document_parse_failed(
@@ -1177,10 +1291,22 @@ def reparse_cached_pdfs(
                         "error": str(exc),
                     }
                 )
+                _emit_progress(
+                    progress,
+                    f"MinerU reparse failed for {label}: {_truncate_progress_text(exc, limit=160)}",
+                )
+        if candidates:
+            _emit_progress(
+                progress,
+                "MinerU reparse phase finished: "
+                f"{summary['materialized']}/{summary['attempted']} succeeded, "
+                f"{summary['failed']} failed.",
+            )
 
         if not skip_index and summary["materialized"] > 0:
             _emit_progress(progress, "building BM25 search indexes...")
             summary["search"] = rebuild_search_indices(conn, target="all")
+            _emit_progress(progress, "BM25 search indexes ready.")
             if bool(embedding_cfg.get("build_after_ingest", True)):
                 try:
                     _emit_progress(progress, "building vector indexes...")
@@ -1189,9 +1315,12 @@ def reparse_cached_pdfs(
                         target="all",
                         model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
                         dim=int(embedding_cfg.get("dim") or 768),
+                        progress=progress,
                     )
+                    _emit_progress(progress, "vector indexes ready.")
                 except Exception as exc:
                     summary["vectors"] = {"ok": False, "error": str(exc)}
+                    _emit_progress(progress, f"vector index build failed: {_truncate_progress_text(exc, limit=160)}")
         if not skip_graph and summary["materialized"] > 0:
             try:
                 _emit_progress(progress, "building graph edges...")
@@ -1200,9 +1329,12 @@ def reparse_cached_pdfs(
                     target="all",
                     collection=collection_payload["name"],
                     similarity_model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
+                    progress=progress,
                 )
+                _emit_progress(progress, "graph edges ready.")
             except Exception as exc:
                 summary["graph"] = {"ok": False, "error": str(exc)}
+                _emit_progress(progress, f"graph build failed: {_truncate_progress_text(exc, limit=160)}")
 
         summary["snapshot"] = _snapshot(conn)
     return summary
@@ -1492,6 +1624,7 @@ def _parse_with_mineru(
     pdf_path: Path,
     collection_name: str,
     replace_existing: bool,
+    progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     stem = paper_storage_stem(conn, work_id)
     dest_dir = parsed_doc_dir(collection_name, stem)
@@ -1499,6 +1632,7 @@ def _parse_with_mineru(
     document_row = _document_row(conn, work_id=work_id)
     if manifest_path.exists() and not replace_existing:
         if document_row is not None and str(document_row["parse_status"] or "") == "materialized":
+            _emit_progress(progress, "using cached parsed document; skipping MinerU submission.")
             return {
                 "ok": True,
                 "work_id": work_id,
@@ -1506,6 +1640,7 @@ def _parse_with_mineru(
                 "state": "cached",
                 "parsed_dir": str(dest_dir),
             }
+        _emit_progress(progress, "found cached manifest; materializing into the database...")
         return _materialize_existing_manifest(
             conn,
             config=config,
@@ -1525,10 +1660,13 @@ def _parse_with_mineru(
         manifest_path=manifest_path,
         parse_error=None,
     )
-    task = client.submit_local_pdf(pdf_path, data_id=stem)
-    client.download_result_zip(task, output_path=zip_path)
+    _emit_progress(progress, f"submitting {pdf_path.name} to MinerU...")
+    task = client.submit_local_pdf(pdf_path, data_id=stem, progress=progress)
+    client.download_result_zip(task, output_path=zip_path, progress=progress)
+    _emit_progress(progress, f"importing parsed bundle into {dest_dir.name}...")
     import_mineru_source(source_path=zip_path, dest_dir=dest_dir, replace=replace_existing)
 
+    _emit_progress(progress, "materializing parsed manifest into SQLite...")
     result = _materialize_existing_manifest(
         conn,
         config=config,
@@ -1538,6 +1676,7 @@ def _parse_with_mineru(
     )
     result["state"] = task.state
     result["zip_path"] = str(zip_path)
+    _emit_progress(progress, "materialized parsed document.")
     return result
 
 

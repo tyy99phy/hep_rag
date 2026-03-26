@@ -10,6 +10,48 @@ from hep_rag_v2.providers.mineru_api import MinerUClient
 
 
 class MinerUApiTests(unittest.TestCase):
+    def test_submit_local_pdf_emits_progress_messages(self) -> None:
+        client = MinerUClient(
+            api_base="https://mineru.net/api/v4",
+            api_token="token",
+        )
+        create_response = mock.Mock()
+        create_response.raise_for_status.return_value = None
+        create_response.json.return_value = {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "batch_id": "batch-progress",
+                "file_urls": ["https://example.com/upload.pdf"],
+            },
+        }
+        poll_response = mock.Mock()
+        poll_response.raise_for_status.return_value = None
+        poll_response.json.return_value = {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "batch_id": "batch-progress",
+                "state": "done",
+                "data_id": "paper",
+                "full_zip_url": "https://example.com/result.zip",
+            },
+        }
+        messages: list[str] = []
+
+        with (
+            mock.patch("hep_rag_v2.providers.mineru_api.requests.post", return_value=create_response),
+            mock.patch("hep_rag_v2.providers.mineru_api.MinerUClient._upload_binary", return_value=None),
+            mock.patch("hep_rag_v2.providers.mineru_api.requests.get", return_value=poll_response),
+        ):
+            result = client.submit_local_pdf(Path("paper.pdf"), data_id="paper", progress=messages.append)
+
+        self.assertEqual(result.batch_id, "batch-progress")
+        self.assertTrue(any("creating MinerU batch for paper.pdf" in item for item in messages))
+        self.assertTrue(any("created batch batch-progress; uploading PDF" in item for item in messages))
+        self.assertTrue(any("upload complete; polling parse status" in item for item in messages))
+        self.assertTrue(any("batch batch-progress state=done" in item for item in messages))
+
     def test_create_batch_upload_accepts_code_zero(self) -> None:
         client = MinerUClient(
             api_base="https://mineru.net/api/v4",

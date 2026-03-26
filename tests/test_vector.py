@@ -99,11 +99,16 @@ class TestVectorSearch(unittest.TestCase):
                     import_mineru_source(source_path=bundle_dir, dest_dir=dest_dir)
                     materialize_mineru_document(conn, work_id=work_id, manifest_path=dest_dir / "manifest.json")
 
-                    summary = rebuild_vector_indices(conn, target="all")
+                    progress_messages: list[str] = []
+                    summary = rebuild_vector_indices(conn, target="all", progress=progress_messages.append)
                     conn.commit()
 
                     self.assertEqual(summary["works"], 2)
                     self.assertGreaterEqual(summary["chunks"], 2)
+                    self.assertTrue(any("building work vector index" in item for item in progress_messages))
+                    self.assertTrue(any("work vector index ready" in item for item in progress_messages))
+                    self.assertTrue(any("building chunk vector index" in item for item in progress_messages))
+                    self.assertTrue(any("chunk vector index ready" in item for item in progress_messages))
 
                     work_results = search_works_vector(conn, query="rare decay four muons", limit=5)
                     self.assertGreaterEqual(len(work_results), 1)
@@ -217,7 +222,13 @@ class TestVectorSearch(unittest.TestCase):
                         }
                         upsert_work_from_hit(conn, collection_id=collection_id, hit=hit)
 
-                    rebuild_vector_indices(conn, target="works", model=HASH_IDF_VECTOR_MODEL)
+                    progress_messages: list[str] = []
+                    rebuild_vector_indices(
+                        conn,
+                        target="works",
+                        model=HASH_IDF_VECTOR_MODEL,
+                        progress=progress_messages.append,
+                    )
                     rebuild_graph_edges(
                         conn,
                         target="similarity",
@@ -225,6 +236,7 @@ class TestVectorSearch(unittest.TestCase):
                         similarity_model=HASH_IDF_VECTOR_MODEL,
                         similarity_top_k=2,
                         similarity_min_score=0.2,
+                        progress=progress_messages.append,
                     )
                     conn.commit()
 
@@ -243,6 +255,10 @@ class TestVectorSearch(unittest.TestCase):
                     self.assertGreaterEqual(len(neighbors), 1)
                     self.assertEqual(neighbors[0]["canonical_id"], "812")
                     self.assertEqual(neighbors[0]["edge_kind"], "similarity")
+                    self.assertTrue(any("building work vector index" in item for item in progress_messages))
+                    self.assertTrue(any("work vector index ready" in item for item in progress_messages))
+                    self.assertTrue(any("building similarity edges" in item for item in progress_messages))
+                    self.assertTrue(any("similarity edges ready" in item for item in progress_messages))
 
 
 @contextlib.contextmanager
