@@ -359,14 +359,28 @@
       gap: 10px;
       flex-wrap: wrap;
       margin-top: 10px;
-      font-size: 12px;
     }
 
-    .result-link-row a {
+    .result-link-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 11px;
+      border-radius: 999px;
+      border: 1px solid rgba(31, 107, 72, 0.18);
+      background: rgba(31, 107, 72, 0.08);
       color: var(--accent);
-      text-decoration: underline;
-      text-underline-offset: 2px;
+      text-decoration: none;
       font-weight: 600;
+      font-size: 12px;
+      line-height: 1;
+      transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .result-link-btn:hover {
+      transform: translateY(-1px);
+      background: rgba(31, 107, 72, 0.14);
+      border-color: rgba(31, 107, 72, 0.3);
     }
 
     .result-kv {
@@ -1146,7 +1160,7 @@
       const links = [];
       const pushLink = (label, url) => {
         if (!url) return;
-        links.push(`<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`);
+        links.push(`<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer" class="result-link-btn">${escapeHtml(label)}</a>`);
       };
 
       const normalizedSource = String(canonicalSource || "").trim().toLowerCase();
@@ -1156,17 +1170,17 @@
       const doiId = String(doi || (normalizedSource === "doi" ? normalizedId : "")).trim();
 
       if (inspireId) {
-        pushLink("INSPIRE", primarySourceUrl || `https://inspirehep.net/literature/${encodeURIComponent(inspireId)}`);
+        pushLink("Open INSPIRE", primarySourceUrl || `https://inspirehep.net/literature/${encodeURIComponent(inspireId)}`);
       }
       if (arxivId) {
-        pushLink("arXiv", `https://arxiv.org/abs/${encodeURIComponent(arxivId)}`);
+        pushLink("Open arXiv", `https://arxiv.org/abs/${encodeURIComponent(arxivId)}`);
       }
       if (doiId) {
         const normalizedDoi = doiId.replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "");
-        pushLink("DOI", `https://doi.org/${encodeURIComponent(normalizedDoi)}`);
+        pushLink("Open DOI", `https://doi.org/${encodeURIComponent(normalizedDoi)}`);
       }
       if (primaryPdfUrl) {
-        pushLink("PDF", primaryPdfUrl);
+        pushLink("Open PDF", primaryPdfUrl);
       }
 
       if (!links.length) return "";
