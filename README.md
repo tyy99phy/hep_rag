@@ -147,6 +147,40 @@ FastAPI 服务默认提供：
 
 如果设置了 `api.auth_token`，除 `/`、`/ui`、`/docs`、`/openapi.json`、`/health`、`/auth/status` 之外的接口都需要带 token。内置 Web Console 支持直接输入 token；异步 job 元数据和事件会持久化到 workspace 里的 SQLite，因此服务重启后仍可查询历史任务。
 
+### Web UI 使用
+
+先启动服务：
+
+```bash
+hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
+```
+
+然后打开 `http://127.0.0.1:8000/`。页面主要分成两块：
+
+- 左侧是输入区和任务日志
+- 右侧是接口返回的结构化 JSON
+
+推荐的使用顺序：
+
+1. 先看顶部 `Workspace` 卡片，确认当前服务绑定的是你期望的 workspace。
+2. 如果你设置了 `api.auth_token`，先把 token 填到 `API Token` 输入框；未设置时可以留空。
+3. 在 `Query` 里输入主题，例如 `CMS VBS SSWW`，再按需填写 `Collection`、`Limit`、`Target`、`Ask Mode`、`Download Limit`、`Parse Limit`。
+4. 点击 `Fetch Papers` 预览在线搜索结果。这个步骤不会改本地数据库，适合先检查 query 改写和召回是否合理。
+5. 点击 `Retrieve` 只做本地检索，返回 works / chunks 证据，适合检查当前数据库里能不能回答问题。
+6. 点击 `Ask` 会先检索再调用配置好的 LLM，返回最终答案和引用证据。
+7. 点击 `Start Ingest Job` 会提交异步在线入库任务；左侧日志区会持续显示进度事件，例如搜索、下载、MinerU 解析、建索引、建图。
+8. ingest job 成功后，页面会自动刷新 workspace 统计；如果想手动确认当前库状态，可以再点 `Refresh Workspace`。
+
+几个按钮的含义：
+
+- `Fetch Papers`：在线搜索预览，不写库
+- `Retrieve`：只查本地库，不调 LLM
+- `Ask`：本地检索 + LLM 生成
+- `Start Ingest Job`：在线搜索 + 元数据入库 + PDF 下载 + MinerU 解析 + 索引 / 图谱构建
+- `Refresh Workspace`：刷新 works、documents、chunks、citations 统计
+
+页面右侧返回的是原始 JSON，便于直接观察真实 API 行为；如果要逐个调试接口参数，可以打开 `/docs` 用 Swagger UI 交互调用。
+
 ## CLI 命令一览
 
 | 命令 | 说明 |
