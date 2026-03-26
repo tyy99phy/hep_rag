@@ -193,6 +193,38 @@ class ApiLayerTests(unittest.TestCase):
         finally:
             paths.set_workspace_root(original_root)
 
+    def test_progress_events_do_not_fail_job_when_main_db_is_write_locked(self) -> None:
+        def _fake_ingest(config, *, query, limit, collection_name, download_limit, parse_limit, replace_existing, skip_parse, skip_index, skip_graph, progress):
+            with db.connect() as conn:
+                conn.execute("CREATE TABLE IF NOT EXISTS lock_test (id INTEGER PRIMARY KEY, value TEXT)")
+                conn.execute("INSERT INTO lock_test (value) VALUES (?)", ("locked",))
+                progress("progress emitted while metadata transaction holds the write lock")
+            return {"query": query, "ok": True}
+
+        original_root = paths.workspace_root()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                tmp = Path(td)
+                app = create_app(config_loader=_api_config_loader(tmp))
+                with TestClient(app) as client, mock.patch("hep_rag_v2.api.app.ingest_online", side_effect=_fake_ingest):
+                    response = client.post(
+                        "/jobs/ingest-online",
+                        json={"query": "CMS VBS SSWW", "limit": 2},
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    job_id = response.json()["job_id"]
+
+                    payload = _wait_for_job(client, job_id)
+                    self.assertEqual(payload["status"], "succeeded")
+
+                    events = client.get(f"/jobs/{job_id}/events").json()["events"]
+                    self.assertTrue(
+                        any("write lock" in item["message"] for item in events),
+                        msg=events,
+                    )
+        finally:
+            paths.set_workspace_root(original_root)
+
 
 def _seed_workspace(tmp: Path) -> tuple[int, int]:
     db.ensure_db()

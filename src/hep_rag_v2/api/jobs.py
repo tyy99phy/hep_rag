@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Callable
 from uuid import uuid4
 
+from hep_rag_v2 import paths
 from hep_rag_v2.db import connect, ensure_db
 
 
@@ -19,6 +22,8 @@ class BackgroundJobManager:
         self._executor = ThreadPoolExecutor(max_workers=max(1, int(max_workers)), thread_name_prefix="hep-rag-job")
         self._max_events = max(100, int(max_events))
         self._lock = Lock()
+        self._pending_events: dict[str, list[dict[str, Any]]] = {}
+        self._next_seq: dict[str, int] = {}
         ensure_db()
 
     def submit(
@@ -31,7 +36,6 @@ class BackgroundJobManager:
         kwargs: dict[str, Any] | None = None,
         request_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        ensure_db()
         job_id = str(job_id or uuid4().hex)
         created_at = _utcnow()
         with self._lock, connect() as conn:
@@ -52,11 +56,12 @@ class BackgroundJobManager:
                 ),
             )
             conn.execute("DELETE FROM api_job_events WHERE job_id = ?", (job_id,))
+            self._pending_events[job_id] = []
+            self._next_seq[job_id] = 1
         self._executor.submit(self._run_job, job_id, fn, args or (), kwargs or {})
         return self.get(job_id)
 
     def list_jobs(self) -> list[dict[str, Any]]:
-        ensure_db()
         with connect() as conn:
             rows = conn.execute(
                 """
@@ -68,10 +73,11 @@ class BackgroundJobManager:
                 ORDER BY j.created_at DESC, j.job_id DESC
                 """
             ).fetchall()
-        return [_snapshot_row(row) for row in rows]
+        snapshots = [_snapshot_row(row) for row in rows]
+        with self._lock:
+            return [self._overlay_pending_locked(snapshot) for snapshot in snapshots]
 
     def get(self, job_id: str) -> dict[str, Any]:
-        ensure_db()
         with connect() as conn:
             row = conn.execute(
                 """
@@ -86,10 +92,11 @@ class BackgroundJobManager:
             ).fetchone()
         if row is None:
             raise KeyError(job_id)
-        return _snapshot_row(row)
+        snapshot = _snapshot_row(row)
+        with self._lock:
+            return self._overlay_pending_locked(snapshot)
 
     def events(self, job_id: str, *, after: int = 0) -> list[dict[str, Any]]:
-        ensure_db()
         with connect() as conn:
             exists = conn.execute("SELECT 1 FROM api_jobs WHERE job_id = ?", (job_id,)).fetchone()
             if exists is None:
@@ -104,7 +111,7 @@ class BackgroundJobManager:
                 """,
                 (job_id, int(after)),
             ).fetchall()
-        return [
+        persisted = [
             {
                 "seq": int(row["seq"]),
                 "type": row["event_type"],
@@ -115,10 +122,23 @@ class BackgroundJobManager:
             }
             for row in rows
         ]
+        with self._lock:
+            pending = [
+                dict(item)
+                for item in self._pending_events.get(job_id, [])
+                if int(item["seq"]) > int(after)
+            ]
+        merged = {int(item["seq"]): item for item in persisted}
+        for item in pending:
+            merged.setdefault(int(item["seq"]), item)
+        return [merged[key] for key in sorted(merged)]
 
     def progress_callback(self, job_id: str) -> Callable[[str], None]:
         def _callback(message: str) -> None:
-            self.append_event(job_id, message, event_type="progress")
+            try:
+                self.append_event(job_id, message, event_type="progress")
+            except Exception:
+                return
 
         return _callback
 
@@ -134,37 +154,18 @@ class BackgroundJobManager:
         text = str(message or "").strip()
         if not text:
             return
-        ensure_db()
-        with self._lock, connect() as conn:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) AS max_seq FROM api_job_events WHERE job_id = ?",
-                (job_id,),
-            ).fetchone()
-            if row is None:
-                return
-            seq = int(row["max_seq"] or 0) + 1
-            timestamp = _utcnow()
-            conn.execute(
-                """
-                INSERT INTO api_job_events (
-                  job_id, seq, event_type, level, message, payload_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    job_id,
-                    seq,
-                    str(event_type or "progress"),
-                    str(level or "info"),
-                    text,
-                    _json_dumps(payload),
-                    timestamp,
-                ),
-            )
-            conn.execute(
-                "UPDATE api_jobs SET updated_at = ? WHERE job_id = ?",
-                (timestamp, job_id),
-            )
-            self._prune_events(conn, job_id=job_id)
+        event = {
+            "seq": 0,
+            "type": str(event_type or "progress"),
+            "level": str(level or "info"),
+            "message": text,
+            "payload": payload,
+            "timestamp": _utcnow(),
+        }
+        with self._lock:
+            event["seq"] = self._reserve_seq_locked(job_id)
+            self._pending_events.setdefault(job_id, []).append(event)
+            self._flush_pending_locked(job_id)
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=False)
@@ -196,6 +197,8 @@ class BackgroundJobManager:
                 )
             self.append_event(job_id, str(exc), event_type="error", level="error")
             self.append_event(job_id, "job finished with failure", event_type="lifecycle", level="error")
+            with self._lock:
+                self._flush_pending_locked(job_id)
             return
 
         finished_at = _utcnow()
@@ -209,6 +212,8 @@ class BackgroundJobManager:
                 ("succeeded", _json_dumps(result), finished_at, finished_at, job_id),
             )
         self.append_event(job_id, "job finished successfully", event_type="lifecycle")
+        with self._lock:
+            self._flush_pending_locked(job_id)
 
     def _prune_events(self, conn, *, job_id: str) -> None:
         row = conn.execute(
@@ -233,6 +238,83 @@ class BackgroundJobManager:
             """,
             (job_id, job_id, overflow),
         )
+
+    def _overlay_pending_locked(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        pending = self._pending_events.get(snapshot["job_id"], [])
+        if not pending:
+            return snapshot
+        merged = dict(snapshot)
+        merged["event_count"] = int(snapshot["event_count"]) + len(pending)
+        merged["last_event_seq"] = max(
+            int(snapshot["last_event_seq"]),
+            max(int(item["seq"]) for item in pending),
+        )
+        latest_timestamp = max(str(item["timestamp"]) for item in pending)
+        if not merged.get("updated_at") or str(merged["updated_at"]) < latest_timestamp:
+            merged["updated_at"] = latest_timestamp
+        return merged
+
+    def _reserve_seq_locked(self, job_id: str) -> int:
+        next_seq = self._next_seq.get(job_id)
+        if next_seq is None:
+            with connect() as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) AS max_seq FROM api_job_events WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+            next_seq = int(row["max_seq"] or 0) + 1 if row is not None else 1
+        self._next_seq[job_id] = int(next_seq) + 1
+        return int(next_seq)
+
+    def _flush_pending_locked(self, job_id: str) -> None:
+        pending = list(self._pending_events.get(job_id, []))
+        if not pending:
+            return
+        try:
+            with _job_event_connect() as conn:
+                for item in pending:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO api_job_events (
+                          job_id, seq, event_type, level, message, payload_json, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            job_id,
+                            int(item["seq"]),
+                            str(item["type"]),
+                            str(item["level"]),
+                            str(item["message"]),
+                            _json_dumps(item.get("payload")),
+                            str(item["timestamp"]),
+                        ),
+                    )
+                conn.execute(
+                    "UPDATE api_jobs SET updated_at = ? WHERE job_id = ?",
+                    (str(pending[-1]["timestamp"]), job_id),
+                )
+                self._prune_events(conn, job_id=job_id)
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower():
+                return
+            raise
+        self._pending_events[job_id] = []
+
+
+@contextmanager
+def _job_event_connect(timeout_sec: float = 0.05):
+    conn = sqlite3.connect(paths.DB_PATH, timeout=float(timeout_sec))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {max(1, int(float(timeout_sec) * 1000))}")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _snapshot_row(row) -> dict[str, Any]:
