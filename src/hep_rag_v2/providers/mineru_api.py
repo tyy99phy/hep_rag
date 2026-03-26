@@ -98,7 +98,7 @@ class MinerUClient:
         )
         response.raise_for_status()
         body = response.json()
-        if int(body.get("code") or -1) != 0:
+        if _payload_code(body) != 0:
             raise RuntimeError(f"MinerU create batch failed: {body}")
         data = body.get("data") or {}
         batch_id = str(data.get("batch_id") or "").strip()
@@ -128,7 +128,7 @@ class MinerUClient:
             response.raise_for_status()
             payload = response.json()
             last_payload = payload
-            if int(payload.get("code") or -1) != 0:
+            if _payload_code(payload) != 0:
                 raise RuntimeError(f"MinerU batch status failed: {payload}")
             result = _extract_result(payload)
             if result.state in {"done", "failed"}:
@@ -186,3 +186,10 @@ def _extract_result(payload: dict[str, Any]) -> MinerUTaskResult:
 def _safe_data_id(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value))
     return cleaned[:128].strip("_") or "paper"
+
+
+def _payload_code(payload: dict[str, Any]) -> int:
+    try:
+        return int(payload.get("code", -1))
+    except (TypeError, ValueError):
+        return -1
