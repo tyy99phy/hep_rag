@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -133,6 +134,7 @@ def upsert_work_from_hit(
     _rewrite_work_venues(conn, work_id=work_id, metadata=metadata)
     _rewrite_work_topics(conn, work_id=work_id, metadata=metadata)
     citations_written = _rewrite_citations(conn, work_id=work_id, metadata=metadata)
+    _assign_work_family(conn, work_id=work_id, metadata=metadata)
     return {
         "created": created,
         "updated": updated,
@@ -541,3 +543,629 @@ def _coerce_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+FAMILY_TITLE_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+FAMILY_TITLE_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "via",
+    "with",
+}
+FAMILY_STAGE_NEUTRAL_TOKENS = {
+    "pas",
+    "prelim",
+    "preliminary",
+    "public",
+    "internal",
+    "analysis",
+    "note",
+    "notes",
+}
+FAMILY_MEMBER_ROLE_ORDER = {
+    "article": 6,
+    "review": 5,
+    "note": 4,
+    "proceedings": 3,
+    "preprint": 2,
+    "standalone": 1,
+}
+
+
+def expand_work_ids_with_family(conn: sqlite3.Connection, *, work_ids: list[int]) -> list[int]:
+    ordered_work_ids = [int(item) for item in work_ids]
+    if not ordered_work_ids:
+        return []
+
+    placeholders = ",".join("?" for _ in ordered_work_ids)
+    rows = conn.execute(
+        f"""
+        SELECT
+          seed.work_id AS seed_work_id,
+          member.work_id AS related_work_id,
+          family.primary_work_id
+        FROM work_family_members seed
+        JOIN work_families family ON family.family_id = seed.family_id
+        JOIN work_family_members member ON member.family_id = family.family_id
+        WHERE seed.work_id IN ({placeholders})
+        ORDER BY seed.work_id, CASE WHEN member.work_id = family.primary_work_id THEN 0 ELSE 1 END, member.work_id
+        """,
+        ordered_work_ids,
+    ).fetchall()
+
+    by_seed: dict[int, list[int]] = {}
+    for row in rows:
+        by_seed.setdefault(int(row["seed_work_id"]), []).append(int(row["related_work_id"]))
+
+    expanded: list[int] = []
+    seen: set[int] = set()
+    for work_id in ordered_work_ids:
+        candidates = by_seed.get(work_id) or [work_id]
+        for candidate_id in candidates:
+            if candidate_id in seen:
+                continue
+            seen.add(candidate_id)
+            expanded.append(candidate_id)
+    return expanded
+
+
+def family_payload_map(conn: sqlite3.Connection, *, work_ids: list[int]) -> dict[int, dict[str, Any]]:
+    ordered_work_ids = [int(item) for item in work_ids]
+    if not ordered_work_ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in ordered_work_ids)
+    membership_rows = conn.execute(
+        f"""
+        SELECT
+          m.work_id,
+          m.family_id,
+          m.member_role,
+          m.confidence,
+          m.reason_json,
+          f.family_key,
+          f.label,
+          f.primary_work_id,
+          f.relation_kind
+        FROM work_family_members m
+        JOIN work_families f ON f.family_id = m.family_id
+        WHERE m.work_id IN ({placeholders})
+        """,
+        ordered_work_ids,
+    ).fetchall()
+    if not membership_rows:
+        return {
+            work_id: {
+                "family_id": None,
+                "family_key": None,
+                "family_label": None,
+                "family_primary_work_id": work_id,
+                "family_relation_kind": "standalone",
+                "family_member_role": "standalone",
+                "family_confidence": 1.0,
+                "family_size": 1,
+                "related_versions": [],
+            }
+            for work_id in ordered_work_ids
+        }
+
+    membership_map = {int(row["work_id"]): dict(row) for row in membership_rows}
+    family_ids = sorted({int(row["family_id"]) for row in membership_rows})
+    family_placeholders = ",".join("?" for _ in family_ids)
+    family_member_rows = conn.execute(
+        f"""
+        SELECT
+          m.family_id,
+          m.work_id,
+          m.member_role,
+          w.title,
+          w.year,
+          w.canonical_source,
+          w.canonical_id
+        FROM work_family_members m
+        JOIN works w ON w.work_id = m.work_id
+        WHERE m.family_id IN ({family_placeholders})
+        ORDER BY m.family_id, w.work_id
+        """,
+        family_ids,
+    ).fetchall()
+
+    members_by_family: dict[int, list[dict[str, Any]]] = {}
+    for row in family_member_rows:
+        members_by_family.setdefault(int(row["family_id"]), []).append(
+            {
+                "work_id": int(row["work_id"]),
+                "member_role": str(row["member_role"] or "standalone"),
+                "title": row["title"],
+                "year": row["year"],
+                "canonical_source": row["canonical_source"],
+                "canonical_id": row["canonical_id"],
+            }
+        )
+
+    out: dict[int, dict[str, Any]] = {}
+    for work_id in ordered_work_ids:
+        membership = membership_map.get(work_id)
+        if membership is None:
+            out[work_id] = {
+                "family_id": None,
+                "family_key": None,
+                "family_label": None,
+                "family_primary_work_id": work_id,
+                "family_relation_kind": "standalone",
+                "family_member_role": "standalone",
+                "family_confidence": 1.0,
+                "family_size": 1,
+                "related_versions": [],
+            }
+            continue
+
+        family_id = int(membership["family_id"])
+        primary_work_id = int(membership["primary_work_id"] or work_id)
+        members = list(members_by_family.get(family_id) or [])
+        members.sort(
+            key=lambda item: (
+                0 if int(item["work_id"]) == primary_work_id else 1,
+                -FAMILY_MEMBER_ROLE_ORDER.get(str(item["member_role"] or "standalone"), 0),
+                int(item["work_id"]),
+            )
+        )
+        related_versions = [item for item in members if int(item["work_id"]) != work_id]
+        out[work_id] = {
+            "family_id": family_id,
+            "family_key": membership["family_key"],
+            "family_label": membership["label"],
+            "family_primary_work_id": primary_work_id,
+            "family_relation_kind": str(membership["relation_kind"] or "standalone"),
+            "family_member_role": str(membership["member_role"] or "standalone"),
+            "family_confidence": float(membership["confidence"] or 1.0),
+            "family_size": len(members),
+            "related_versions": related_versions,
+        }
+    return out
+
+
+def _assign_work_family(conn: sqlite3.Connection, *, work_id: int, metadata: dict[str, Any]) -> int:
+    existing_family_id = _family_id_for_work(conn, work_id=work_id)
+    match = _best_family_match(conn, work_id=work_id, metadata=metadata)
+    if match is None:
+        family_id = existing_family_id or _create_work_family(
+            conn,
+            family_key=f"work:{work_id}",
+            label=first_title(metadata),
+            primary_work_id=work_id,
+            relation_kind="standalone",
+            confidence=1.0,
+            reason={"matched_by": "self"},
+        )
+    else:
+        target_family_id = _family_id_for_work(conn, work_id=int(match["work_id"]))
+        if target_family_id is None:
+            target_family_id = _create_work_family(
+                conn,
+                family_key=f"work:{int(match['work_id'])}",
+                label=str(match.get("title") or first_title(metadata) or "").strip() or None,
+                primary_work_id=int(match["work_id"]),
+                relation_kind=str(match.get("relation_kind") or "version_family"),
+                confidence=float(match.get("confidence") or 0.8),
+                reason=match,
+            )
+            _upsert_work_family_member(
+                conn,
+                family_id=target_family_id,
+                work_id=int(match["work_id"]),
+                member_role=str(match.get("matched_member_role") or "standalone"),
+                confidence=float(match.get("confidence") or 0.8),
+                reason=match,
+            )
+        family_id = target_family_id
+        if existing_family_id is not None and existing_family_id != family_id:
+            family_id = _merge_work_families(conn, target_family_id=family_id, source_family_id=existing_family_id)
+
+    membership_reason = match or {"matched_by": "self"}
+    member_role = _family_member_role(metadata)
+    member_confidence = float((match or {}).get("confidence") or 1.0)
+    _upsert_work_family_member(
+        conn,
+        family_id=family_id,
+        work_id=work_id,
+        member_role=member_role,
+        confidence=member_confidence,
+        reason=membership_reason,
+    )
+    _refresh_work_family_summary(conn, family_id=family_id)
+    return family_id
+
+
+def _family_id_for_work(conn: sqlite3.Connection, *, work_id: int) -> int | None:
+    row = conn.execute(
+        "SELECT family_id FROM work_family_members WHERE work_id = ?",
+        (work_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return int(row["family_id"])
+
+
+def _create_work_family(
+    conn: sqlite3.Connection,
+    *,
+    family_key: str,
+    label: str | None,
+    primary_work_id: int | None,
+    relation_kind: str,
+    confidence: float,
+    reason: dict[str, Any],
+) -> int:
+    conn.execute(
+        """
+        INSERT INTO work_families (family_key, label, primary_work_id, relation_kind, confidence, reason_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(family_key) DO UPDATE SET
+          label = excluded.label,
+          primary_work_id = COALESCE(work_families.primary_work_id, excluded.primary_work_id),
+          relation_kind = excluded.relation_kind,
+          confidence = excluded.confidence,
+          reason_json = excluded.reason_json,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            family_key,
+            str(label or "").strip() or None,
+            primary_work_id,
+            relation_kind,
+            confidence,
+            json.dumps(reason, ensure_ascii=False),
+        ),
+    )
+    row = conn.execute(
+        "SELECT family_id FROM work_families WHERE family_key = ?",
+        (family_key,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"Failed to upsert work family: {family_key}")
+    return int(row["family_id"])
+
+
+def _merge_work_families(conn: sqlite3.Connection, *, target_family_id: int, source_family_id: int) -> int:
+    if target_family_id == source_family_id:
+        return target_family_id
+    conn.execute(
+        """
+        UPDATE work_family_members
+        SET family_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE family_id = ?
+        """,
+        (target_family_id, source_family_id),
+    )
+    conn.execute("DELETE FROM work_families WHERE family_id = ?", (source_family_id,))
+    _refresh_work_family_summary(conn, family_id=target_family_id)
+    return target_family_id
+
+
+def _upsert_work_family_member(
+    conn: sqlite3.Connection,
+    *,
+    family_id: int,
+    work_id: int,
+    member_role: str,
+    confidence: float,
+    reason: dict[str, Any],
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO work_family_members (family_id, work_id, member_role, confidence, reason_json)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(work_id) DO UPDATE SET
+          family_id = excluded.family_id,
+          member_role = excluded.member_role,
+          confidence = excluded.confidence,
+          reason_json = excluded.reason_json,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            family_id,
+            work_id,
+            member_role,
+            confidence,
+            json.dumps(reason, ensure_ascii=False),
+        ),
+    )
+
+
+def _refresh_work_family_summary(conn: sqlite3.Connection, *, family_id: int) -> None:
+    rows = conn.execute(
+        """
+        SELECT
+          m.work_id,
+          m.member_role,
+          m.confidence,
+          w.title,
+          w.year,
+          w.raw_metadata_json
+        FROM work_family_members m
+        JOIN works w ON w.work_id = m.work_id
+        WHERE m.family_id = ?
+        ORDER BY w.work_id
+        """,
+        (family_id,),
+    ).fetchall()
+    if not rows:
+        return
+
+    member_rows = [dict(row) for row in rows]
+    primary = max(member_rows, key=_family_primary_sort_key)
+    relation_kind = "version_family" if len(member_rows) > 1 else "standalone"
+    confidence = max(float(row["confidence"] or 0.0) for row in member_rows) or 1.0
+    label = str(primary.get("title") or "").strip() or None
+    conn.execute(
+        """
+        UPDATE work_families
+        SET primary_work_id = ?, label = ?, relation_kind = ?, confidence = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE family_id = ?
+        """,
+        (
+            int(primary["work_id"]),
+            label,
+            relation_kind,
+            confidence,
+            family_id,
+        ),
+    )
+
+
+def _family_primary_sort_key(row: dict[str, Any]) -> tuple[int, int, int, int, int, int, int, int]:
+    metadata = _loads_json_object(row.get("raw_metadata_json"))
+    return (
+        FAMILY_MEMBER_ROLE_ORDER.get(str(row.get("member_role") or "standalone"), 0),
+        1 if pdf_url_from_metadata(metadata) else 0,
+        1 if metadata.get("publication_info") else 0,
+        1 if first_arxiv_id(metadata) else 0,
+        1 if first_doi(metadata) else 0,
+        _coerce_int(metadata.get("citation_count")) or 0,
+        _coerce_int(row.get("year")) or 0,
+        len(str(row.get("title") or "")),
+    )
+
+
+def _best_family_match(
+    conn: sqlite3.Connection,
+    *,
+    work_id: int,
+    metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    year = year_from_metadata(metadata)
+    query = """
+        SELECT w.work_id, w.title, w.year, w.raw_metadata_json
+        FROM works w
+        WHERE w.work_id != ?
+    """
+    params: list[Any] = [work_id]
+    if year is not None:
+        query += " AND (w.year BETWEEN ? AND ? OR w.year IS NULL)"
+        params.extend([year - 2, year + 2])
+    query += " ORDER BY w.work_id DESC LIMIT 250"
+
+    best: dict[str, Any] | None = None
+    for row in conn.execute(query, params).fetchall():
+        candidate_metadata = _loads_json_object(row["raw_metadata_json"])
+        match = _family_match_metadata(metadata, candidate_metadata)
+        if match is None:
+            continue
+        match["work_id"] = int(row["work_id"])
+        match["title"] = row["title"]
+        match["matched_member_role"] = _family_member_role(candidate_metadata)
+        if best is None or float(match["confidence"]) > float(best["confidence"]):
+            best = match
+    return best
+
+
+def _family_match_metadata(left_md: dict[str, Any], right_md: dict[str, Any]) -> dict[str, Any] | None:
+    if _has_distinct_publication_identities(left_md, right_md):
+        return None
+
+    title_equivalent = _family_titles_look_equivalent(first_title(left_md), first_title(right_md))
+    year_close = _family_years_are_close(left_md, right_md)
+    shared_reports = sorted(_normalized_report_roots(left_md) & _normalized_report_roots(right_md))
+    shared_collaborations = sorted(_normalized_collaborations(left_md) & _normalized_collaborations(right_md))
+
+    if title_equivalent and year_close and shared_reports:
+        return {
+            "matched_by": "report_number+title",
+            "relation_kind": "version_family",
+            "confidence": 0.99,
+            "shared_report_roots": shared_reports,
+        }
+    if title_equivalent and shared_collaborations and _looks_like_stage_variant_family(left_md, right_md):
+        confidence = 0.9 + (0.03 if shared_collaborations else 0.0)
+        payload = {
+            "matched_by": "title+stage_variant",
+            "relation_kind": "version_family",
+            "confidence": confidence,
+        }
+        if shared_collaborations:
+            payload["shared_collaborations"] = shared_collaborations[:6]
+        return payload
+    if shared_reports and year_close and shared_collaborations:
+        return {
+            "matched_by": "report_number+collaboration",
+            "relation_kind": "version_family",
+            "confidence": 0.82,
+            "shared_report_roots": shared_reports,
+            "shared_collaborations": shared_collaborations[:6],
+        }
+    return None
+
+
+def _family_years_are_close(left_md: dict[str, Any], right_md: dict[str, Any]) -> bool:
+    left_year = year_from_metadata(left_md)
+    right_year = year_from_metadata(right_md)
+    if left_year is None or right_year is None:
+        return True
+    return abs(left_year - right_year) <= 2
+
+
+def _family_titles_look_equivalent(left: str | None, right: str | None) -> bool:
+    left_norm = _normalize_family_title(left)
+    right_norm = _normalize_family_title(right)
+    if not left_norm or not right_norm:
+        return False
+    if left_norm == right_norm:
+        return True
+
+    left_tokens = _family_title_tokens(left_norm)
+    right_tokens = _family_title_tokens(right_norm)
+    if not left_tokens or not right_tokens:
+        return False
+    shared = len(left_tokens & right_tokens)
+    if shared < 6:
+        return False
+    if left_tokens == right_tokens:
+        return True
+    return shared / float(len(left_tokens | right_tokens)) >= 0.92
+
+
+def _normalize_family_title(title: str | None) -> str:
+    value = str(title or "").casefold()
+    if not value:
+        return ""
+    value = value.replace("same-sign", "same sign")
+    value = value.replace("proton-proton", "proton proton")
+    value = value.replace("w±w±", "ww")
+    value = re.sub(r"\\[a-z]+", " ", value)
+    value = value.replace("±", " ")
+    value = re.sub(r"\$+", " ", value)
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return " ".join(value.split())
+
+
+def _family_title_tokens(normalized_title: str) -> set[str]:
+    return {
+        token
+        for token in FAMILY_TITLE_TOKEN_PATTERN.findall(str(normalized_title or ""))
+        if token and token not in FAMILY_TITLE_STOPWORDS
+    }
+
+
+def _looks_like_stage_variant_family(left_md: dict[str, Any], right_md: dict[str, Any]) -> bool:
+    left_stage = _document_stage_rank(left_md)
+    right_stage = _document_stage_rank(right_md)
+    if left_stage == right_stage:
+        return False
+    if max(left_stage, right_stage) < 3:
+        return False
+
+    higher = left_md if left_stage > right_stage else right_md
+    lower = right_md if higher is left_md else left_md
+    if not _has_publication_signal(higher):
+        return False
+    if _has_publication_signal(lower) and _document_stage_rank(lower) >= 4:
+        return False
+    return True
+
+
+def _document_stage_rank(metadata: dict[str, Any]) -> int:
+    doc_types = {str(item).casefold() for item in (metadata.get("document_type") or [])}
+    if "article" in doc_types or "review" in doc_types:
+        return 5
+    if "note" in doc_types:
+        return 4
+    if "conference paper" in doc_types or "proceedings article" in doc_types:
+        return 3
+    if metadata.get("publication_info"):
+        return 2
+    return 1
+
+
+def _has_publication_signal(metadata: dict[str, Any]) -> bool:
+    return bool(metadata.get("publication_info") or first_arxiv_id(metadata) or first_doi(metadata) or metadata.get("documents"))
+
+
+def _has_distinct_publication_identities(left_md: dict[str, Any], right_md: dict[str, Any]) -> bool:
+    for extractor in (first_arxiv_id, first_doi):
+        left_value = str(extractor(left_md) or "").strip().casefold()
+        right_value = str(extractor(right_md) or "").strip().casefold()
+        if left_value and right_value and left_value != right_value:
+            return True
+    return False
+
+
+def _normalized_report_roots(metadata: dict[str, Any]) -> set[str]:
+    roots: set[str] = set()
+    for item in metadata.get("report_numbers") or []:
+        value = None
+        if isinstance(item, dict):
+            value = item.get("value")
+        elif item:
+            value = item
+        normalized = _normalize_report_number(value)
+        if normalized:
+            roots.add(normalized)
+    return roots
+
+
+def _normalize_report_number(value: Any) -> str | None:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return None
+    tokens = [token for token in re.findall(r"[a-z0-9]+", text) if token]
+    if not tokens:
+        return None
+    normalized_tokens = [token for token in tokens if token not in FAMILY_STAGE_NEUTRAL_TOKENS]
+    if normalized_tokens:
+        tokens = normalized_tokens
+    return "-".join(tokens)
+
+
+def _normalized_collaborations(metadata: dict[str, Any]) -> set[str]:
+    out: set[str] = set()
+    for item in metadata.get("collaborations") or []:
+        if isinstance(item, dict):
+            value = item.get("value") or item.get("name")
+        else:
+            value = item
+        text = str(value or "").strip().casefold()
+        if text:
+            out.add(text)
+    return out
+
+
+def _family_member_role(metadata: dict[str, Any]) -> str:
+    doc_types = {str(item).casefold() for item in (metadata.get("document_type") or [])}
+    if "article" in doc_types:
+        return "article"
+    if "review" in doc_types:
+        return "review"
+    if "note" in doc_types:
+        return "note"
+    if "conference paper" in doc_types or "proceedings article" in doc_types:
+        return "proceedings"
+    if first_arxiv_id(metadata):
+        return "preprint"
+    return "standalone"
+
+
+def _loads_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}

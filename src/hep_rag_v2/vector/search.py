@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 
 from hep_rag_v2.graph import graph_neighbors
+from hep_rag_v2.metadata import family_payload_map
 from hep_rag_v2.query import analyze_query, is_relation_query, is_result_query, query_match_stats
 from hep_rag_v2.search import search_chunks_bm25, search_works_bm25
 from .embedding import (
@@ -86,7 +87,9 @@ def _fetch_chunk_rows(conn: sqlite3.Connection, ids: list[int]) -> dict[int, dic
           c.section_hint,
           c.page_hint,
           c.clean_text,
-          w.title AS raw_title
+          w.title AS raw_title,
+          w.canonical_source,
+          w.canonical_id
         FROM chunks c
         JOIN works w ON w.work_id = c.work_id
         WHERE c.chunk_id IN ({placeholders})
@@ -94,6 +97,89 @@ def _fetch_chunk_rows(conn: sqlite3.Connection, ids: list[int]) -> dict[int, dic
         ids,
     ).fetchall()
     return {int(row["chunk_id"]): dict(row) for row in rows}
+
+
+def _attach_family_payloads_to_works(
+    conn: sqlite3.Connection,
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    work_ids = [int(row["work_id"]) for row in rows if row.get("work_id") is not None]
+    payloads = family_payload_map(conn, work_ids=work_ids)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        payload = payloads.get(int(item["work_id"])) if item.get("work_id") is not None else None
+        if payload is not None:
+            item.update(payload)
+        out.append(item)
+    return out
+
+
+def _attach_family_payloads_to_chunks(
+    conn: sqlite3.Connection,
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    work_ids = [int(row["work_id"]) for row in rows if row.get("work_id") is not None]
+    payloads = family_payload_map(conn, work_ids=work_ids)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        payload = payloads.get(int(item["work_id"])) if item.get("work_id") is not None else None
+        if payload is not None:
+            item.update(payload)
+        out.append(item)
+    return out
+
+
+def _dedupe_work_rows_by_family(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    ordered_keys: list[tuple[str, int]] = []
+    for row in rows:
+        family_id = row.get("family_id")
+        key = ("family", int(family_id)) if family_id is not None else ("work", int(row["work_id"]))
+        if key not in groups:
+            groups[key] = []
+            ordered_keys.append(key)
+        groups[key].append(row)
+
+    out: list[dict[str, Any]] = []
+    for key in ordered_keys:
+        group = groups[key]
+        primary_work_id = next(
+            (
+                int(item["family_primary_work_id"])
+                for item in group
+                if item.get("family_primary_work_id") is not None
+            ),
+            None,
+        )
+        representative = next(
+            (item for item in group if primary_work_id is not None and int(item["work_id"]) == primary_work_id),
+            group[0],
+        )
+        payload = dict(representative)
+        retrieved_versions = [
+            {
+                "work_id": int(item["work_id"]),
+                "title": item.get("raw_title"),
+                "year": item.get("year"),
+                "canonical_source": item.get("canonical_source"),
+                "canonical_id": item.get("canonical_id"),
+                "rank": item.get("rank"),
+                "hybrid_score": item.get("hybrid_score"),
+            }
+            for item in group
+            if int(item["work_id"]) != int(payload["work_id"])
+        ]
+        if retrieved_versions:
+            payload["retrieved_family_versions"] = retrieved_versions
+        out.append(payload)
+        if len(out) >= limit:
+            break
+
+    for rank, item in enumerate(out, start=1):
+        item["rank"] = rank
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -481,7 +567,8 @@ def search_works_hybrid(
             }
         )
         out.append(payload)
-    return out
+    out = _attach_family_payloads_to_works(conn, out)
+    return _dedupe_work_rows_by_family(out, limit=limit)
 
 
 def search_chunks_hybrid(
@@ -545,7 +632,7 @@ def search_chunks_hybrid(
             }
         )
         out.append(payload)
-    return out
+    return _attach_family_payloads_to_chunks(conn, out)
 
 
 def route_query(query: str) -> dict[str, Any]:

@@ -78,6 +78,7 @@ def summarize_hit(hit: dict[str, Any]) -> dict[str, Any]:
     metadata = hit.get("metadata") or {}
     pdf_candidates = list_pdf_candidates(hit)
     identifiers = _identity_map(metadata)
+    related_versions = [summarize_hit(item) for item in (hit.get("_family_members") or [])]
     payload = {
         "title": first_title(metadata),
         "year": year_from_metadata(metadata),
@@ -85,6 +86,8 @@ def summarize_hit(hit: dict[str, Any]) -> dict[str, Any]:
         "pdf_candidates": pdf_candidates,
         "pdf_candidate_count": len(pdf_candidates),
         "source_url": str((hit.get("links") or {}).get("self") or "") or None,
+        "family_size": int(hit.get("_family_size") or 1),
+        "related_versions": related_versions,
     }
     if hit.get("local_status") is not None:
         payload["local_status"] = hit["local_status"]

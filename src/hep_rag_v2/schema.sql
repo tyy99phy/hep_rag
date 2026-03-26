@@ -147,6 +147,32 @@ CREATE TABLE IF NOT EXISTS collection_works (
   FOREIGN KEY (work_id) REFERENCES works(work_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS work_families (
+  family_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  family_key TEXT NOT NULL UNIQUE,
+  label TEXT,
+  primary_work_id INTEGER,
+  relation_kind TEXT NOT NULL DEFAULT 'standalone',
+  confidence REAL,
+  reason_json TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (primary_work_id) REFERENCES works(work_id)
+);
+
+CREATE TABLE IF NOT EXISTS work_family_members (
+  family_id INTEGER NOT NULL,
+  work_id INTEGER NOT NULL UNIQUE,
+  member_role TEXT NOT NULL DEFAULT 'standalone',
+  confidence REAL,
+  reason_json TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (family_id, work_id),
+  FOREIGN KEY (family_id) REFERENCES work_families(family_id) ON DELETE CASCADE,
+  FOREIGN KEY (work_id) REFERENCES works(work_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS citations (
   citation_id INTEGER PRIMARY KEY AUTOINCREMENT,
   src_work_id INTEGER NOT NULL,
@@ -352,6 +378,8 @@ CREATE INDEX IF NOT EXISTS idx_work_authors_author ON work_authors(author_id);
 CREATE INDEX IF NOT EXISTS idx_work_collaborations_collaboration ON work_collaborations(collaboration_id);
 CREATE INDEX IF NOT EXISTS idx_work_topics_topic ON work_topics(topic_id);
 CREATE INDEX IF NOT EXISTS idx_collection_works_work ON collection_works(work_id);
+CREATE INDEX IF NOT EXISTS idx_work_families_primary ON work_families(primary_work_id);
+CREATE INDEX IF NOT EXISTS idx_work_family_members_family ON work_family_members(family_id);
 CREATE INDEX IF NOT EXISTS idx_citations_src ON citations(src_work_id);
 CREATE INDEX IF NOT EXISTS idx_citations_dst_external ON citations(dst_source, dst_external_id);
 CREATE INDEX IF NOT EXISTS idx_citations_dst_work ON citations(dst_work_id);

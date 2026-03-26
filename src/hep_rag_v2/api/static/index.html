@@ -753,19 +753,23 @@
         .filter(([, value]) => value)
         .map(([key, value]) => badge(`${escapeHtml(key)}:${escapeHtml(String(value))}`))
         .join("");
+      const relatedVersions = Array.isArray(item.related_versions) ? item.related_versions : [];
       return `
         <div class="result-card">
           <div class="result-card-title">${escapeHtml(item.title || "Untitled paper")}</div>
           <div class="result-card-meta">
             ${badge(`Year ${item.year ?? "?"}`)}
             ${badge(`PDF candidates ${item.pdf_candidate_count ?? 0}`)}
+            ${badge(`Family ${item.family_size ?? 1}`)}
             ${idParts}
           </div>
+          ${relatedVersions.length ? `<div class="result-card-copy">Related versions: ${escapeHtml(relatedVersions.map((version) => `${version.title || "untitled"} [${version.identifiers?.inspire || version.identifiers?.arxiv || "id"}]`).join(" | "))}</div>` : ``}
         </div>
       `;
     }
 
     function renderWorkCard(item) {
+      const relatedVersions = Array.isArray(item.related_versions) ? item.related_versions : [];
       return `
         <div class="result-card">
           <div class="result-card-title">${escapeHtml(item.raw_title || item.title || "Untitled work")}</div>
@@ -773,9 +777,12 @@
             ${badge(`Rank ${item.rank ?? "-"}`)}
             ${badge(`Score ${formatScore(item.hybrid_score)}`)}
             ${badge(`Year ${item.year ?? "?"}`)}
+            ${badge(`Role ${escapeHtml(item.family_member_role || "standalone")}`)}
+            ${badge(`Family ${item.family_size ?? 1}`)}
             ${badge(`${escapeHtml(item.canonical_source || "id")}:${escapeHtml(String(item.canonical_id || item.work_id || ""))}`)}
           </div>
           <div class="result-card-copy">${escapeHtml(truncateText(item.abstract || "", 280) || "No abstract available.")}</div>
+          ${relatedVersions.length ? `<div class="result-card-copy">Related versions: ${escapeHtml(relatedVersions.map((version) => `${version.member_role || "variant"}: ${version.title || "untitled"} (${version.year || "?"})`).join(" | "))}</div>` : ``}
         </div>
       `;
     }

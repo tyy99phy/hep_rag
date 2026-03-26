@@ -16,6 +16,8 @@ from hep_rag_v2.fulltext import import_mineru_source, materialize_mineru_documen
 from hep_rag_v2.graph import rebuild_graph_edges
 from hep_rag_v2.metadata import (
     canonical_identity,
+    expand_work_ids_with_family,
+    family_payload_map,
     first_arxiv_id,
     first_doi,
     first_title,
@@ -496,11 +498,11 @@ def _merge_ranked_hits(
         key=lambda key: (-scores[key], first_seen[key][0], first_seen[key][1]),
     )
     ordered_hits = [hit_map[key] for key in ordered]
-    deduped_hits = _dedupe_online_hits(ordered_hits)
-    return deduped_hits[:limit], {
+    family_hits = _collapse_online_hit_families(ordered_hits)
+    return family_hits[:limit], {
         "merged_hit_count": len(ordered_hits),
-        "deduped_hit_count": len(deduped_hits),
-        "dedupe_removed": max(0, len(ordered_hits) - len(deduped_hits)),
+        "deduped_hit_count": len(family_hits),
+        "dedupe_removed": max(0, len(ordered_hits) - len(family_hits)),
     }
 
 
@@ -542,19 +544,31 @@ def _document_type_score_bonus(hit: dict[str, Any]) -> float:
     return 0.0
 
 
-def _dedupe_online_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    deduped: list[dict[str, Any]] = []
+def _collapse_online_hit_families(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    families: list[list[dict[str, Any]]] = []
     for hit in hits:
-        merged = False
-        for idx, existing in enumerate(deduped):
-            if not _hits_are_semantic_duplicates(existing, hit):
-                continue
-            deduped[idx] = _merge_duplicate_hits(existing, hit)
-            merged = True
-            break
-        if not merged:
-            deduped.append(hit)
-    return deduped
+        matched_family: list[dict[str, Any]] | None = None
+        for family in families:
+            if any(_hits_are_semantic_duplicates(existing, hit) for existing in family):
+                matched_family = family
+                break
+        if matched_family is None:
+            families.append([hit])
+            continue
+        matched_family.append(hit)
+
+    collapsed: list[dict[str, Any]] = []
+    for family in families:
+        primary = max(family, key=_hit_richness_key)
+        payload = copy.deepcopy(primary)
+        payload["_family_members"] = [
+            copy.deepcopy(item)
+            for item in family
+            if _online_hit_key(item) != _online_hit_key(primary)
+        ]
+        payload["_family_size"] = len(family)
+        collapsed.append(payload)
+    return collapsed
 
 
 def _hits_are_semantic_duplicates(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -581,6 +595,10 @@ def _hits_are_semantic_duplicates(left: dict[str, Any], right: dict[str, Any]) -
         return False
 
     if not _titles_look_equivalent(first_title(left_md), first_title(right_md)):
+        return False
+    if _shared_report_roots(left_md, right_md):
+        return True
+    if not (_hit_collaborations(left_md) & _hit_collaborations(right_md)):
         return False
     return _looks_like_stage_variant_duplicate(left_md, right_md)
 
@@ -672,6 +690,31 @@ def _hit_collaborations(metadata: dict[str, Any]) -> set[str]:
         elif item:
             collabs.add(str(item).strip().casefold())
     return collabs
+
+
+def _shared_report_roots(left_md: dict[str, Any], right_md: dict[str, Any]) -> set[str]:
+    return _hit_report_roots(left_md) & _hit_report_roots(right_md)
+
+
+def _hit_report_roots(metadata: dict[str, Any]) -> set[str]:
+    roots: set[str] = set()
+    for item in metadata.get("report_numbers") or []:
+        value = item.get("value") if isinstance(item, dict) else item
+        normalized = _normalize_report_root(value)
+        if normalized:
+            roots.add(normalized)
+    return roots
+
+
+def _normalize_report_root(value: Any) -> str | None:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return None
+    tokens = [token for token in re.findall(r"[a-z0-9]+", text) if token]
+    if not tokens:
+        return None
+    tokens = [token for token in tokens if token not in {"pas", "prelim", "preliminary", "public", "internal", "note", "notes"}] or tokens
+    return "-".join(tokens)
 
 
 def _looks_like_stage_variant_duplicate(left_md: dict[str, Any], right_md: dict[str, Any]) -> bool:
@@ -798,6 +841,13 @@ def _annotate_hits_with_local_status(
         local = _hit_local_status(conn, hit=hit, collection_name=collection_name)
         item = copy.deepcopy(hit)
         item["local_status"] = local
+        family_members = []
+        for member in item.get("_family_members") or []:
+            member_payload = copy.deepcopy(member)
+            member_payload["local_status"] = _hit_local_status(conn, hit=member, collection_name=collection_name)
+            family_members.append(member_payload)
+        if family_members:
+            item["_family_members"] = family_members
         annotated.append(item)
         if local["known_work"]:
             summary["known_works"] += 1
@@ -903,11 +953,13 @@ def fetch_online_candidates(
             collection_name=collection_name,
         )
     _emit_progress(progress, f"found {len(hits)} candidate papers.")
+    raw_record_count = sum(1 + len(hit.get("_family_members") or []) for hit in hits)
     return {
         "query": query,
         "search_plan": search_plan,
         "local_summary": local_summary,
         "effective_count": len(hits),
+        "raw_record_count": raw_record_count,
         "results": [summarize_hit(hit) for hit in hits],
     }
 
@@ -954,6 +1006,7 @@ def ingest_online(
         },
         "metadata": {
             "hits_seen": len(hits),
+            "raw_records_seen": sum(1 + len(hit.get("_family_members") or []) for hit in hits),
             "created": 0,
             "updated": 0,
             "citations_written": 0,
@@ -997,13 +1050,15 @@ def ingest_online(
 
         try:
             # Phase 1: Metadata upsert (sequential, in DB transaction)
-            _emit_progress(progress, f"ingesting metadata for {len(hits)} papers...")
+            _emit_progress(progress, f"ingesting metadata for {len(hits)} paper families...")
             download_tasks: list[dict[str, Any]] = []
             for hit in hits:
-                stats = upsert_work_from_hit(conn, collection_id=collection_id, hit=hit)
-                summary["metadata"]["created"] += int(stats["created"])
-                summary["metadata"]["updated"] += int(stats["updated"])
-                summary["metadata"]["citations_written"] += int(stats["citations_written"])
+                family_hits = [hit, *(hit.get("_family_members") or [])]
+                for family_hit in family_hits:
+                    stats = upsert_work_from_hit(conn, collection_id=collection_id, hit=family_hit)
+                    summary["metadata"]["created"] += int(stats["created"])
+                    summary["metadata"]["updated"] += int(stats["updated"])
+                    summary["metadata"]["citations_written"] += int(stats["citations_written"])
 
                 work_id = _find_work_id_for_hit(conn, hit)
                 if work_id is None:
@@ -1735,9 +1790,10 @@ def _supporting_chunks(
     )
     if not work_ids:
         return raw[:limit]
+    expanded_work_ids = expand_work_ids_with_family(conn, work_ids=work_ids)
     selected: list[dict[str, Any]] = []
     seen: set[int] = set()
-    work_id_set = {int(item) for item in work_ids}
+    work_id_set = {int(item) for item in (expanded_work_ids or work_ids)}
     for row in raw:
         chunk_id = int(row["chunk_id"])
         if int(row["work_id"]) not in work_id_set or chunk_id in seen:
@@ -1764,10 +1820,23 @@ def _hydrate_works_from_chunks(
     limit: int,
 ) -> list[dict[str, Any]]:
     ids: list[int] = []
+    seen_families: set[int] = set()
+    family_map = family_payload_map(
+        conn,
+        work_ids=[int(row["work_id"]) for row in chunks if row.get("work_id") is not None],
+    )
     for row in chunks:
         work_id = int(row["work_id"])
-        if work_id not in ids:
-            ids.append(work_id)
+        family_payload = family_map.get(work_id) or {}
+        family_id = family_payload.get("family_id")
+        chosen_work_id = int(family_payload.get("family_primary_work_id") or work_id)
+        if family_id is not None:
+            family_key = int(family_id)
+            if family_key in seen_families:
+                continue
+            seen_families.add(family_key)
+        if chosen_work_id not in ids:
+            ids.append(chosen_work_id)
         if len(ids) >= limit:
             break
     if not ids:
@@ -1791,6 +1860,9 @@ def _hydrate_works_from_chunks(
         row["rank"] = rank
         row["search_type"] = "chunk_support"
         row["hybrid_score"] = placeholder_scores.get(work_id, 0.0)
+        family_payload = family_map.get(work_id)
+        if family_payload is not None:
+            row.update(family_payload)
         out.append(row)
     return out
 
@@ -1810,9 +1882,19 @@ def _build_answer_messages(
 
     work_lines = []
     for idx, item in enumerate(works, start=1):
+        related_versions = list(item.get("related_versions") or [])[:3]
+        related_text = ""
+        if related_versions:
+            related_text = " | related versions: " + "; ".join(
+                (
+                    f"{version.get('member_role')}: {version.get('title')} "
+                    f"({version.get('year')}) {version.get('canonical_source')}:{version.get('canonical_id')}"
+                ).strip()
+                for version in related_versions
+            )
         work_lines.append(
             f"[W{idx}] {item.get('raw_title')} ({item.get('year')}) "
-            f"{item.get('canonical_source')}:{item.get('canonical_id')}"
+            f"{item.get('canonical_source')}:{item.get('canonical_id')}{related_text}"
         )
 
     chunk_lines = []

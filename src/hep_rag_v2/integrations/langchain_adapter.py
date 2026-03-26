@@ -438,6 +438,8 @@ def _chunk_to_document(item: Mapping[str, Any]) -> Document:
         "source_type": "chunk",
         "chunk_id": item.get("chunk_id"),
         "work_id": item.get("work_id"),
+        "family_id": item.get("family_id"),
+        "family_member_role": item.get("family_member_role"),
         "section_hint": item.get("section_hint"),
         "chunk_role": item.get("chunk_role"),
         "canonical_source": item.get("canonical_source"),
@@ -460,6 +462,9 @@ def _work_to_document(item: Mapping[str, Any]) -> Document:
     metadata = {
         "source_type": "work",
         "work_id": item.get("work_id"),
+        "family_id": item.get("family_id"),
+        "family_member_role": item.get("family_member_role"),
+        "family_size": item.get("family_size"),
         "canonical_source": item.get("canonical_source"),
         "canonical_id": item.get("canonical_id"),
         "title": item.get("raw_title"),

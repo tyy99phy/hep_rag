@@ -38,6 +38,7 @@ def _snapshot(conn: sqlite3.Connection) -> dict[str, int]:
         SELECT
           (SELECT COUNT(*) FROM collections) AS collections,
           (SELECT COUNT(*) FROM works) AS works,
+          (SELECT COUNT(*) FROM work_families) AS work_families,
           (SELECT COUNT(*) FROM authors) AS authors,
           (SELECT COUNT(*) FROM venues) AS venues,
           (SELECT COUNT(*) FROM topics) AS topics,
