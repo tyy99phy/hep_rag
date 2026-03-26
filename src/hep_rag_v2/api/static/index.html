@@ -380,14 +380,161 @@
     }
 
     .result-answer {
-      white-space: pre-wrap;
       font-size: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      background: rgba(255,255,255,0.78);
     }
 
     .result-snippet {
       white-space: pre-wrap;
       font-size: 13px;
       color: var(--ink);
+    }
+
+    .result-subtitle {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .result-card-subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      margin: -2px 0 8px;
+    }
+
+    .result-details {
+      margin-top: 10px;
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+    }
+
+    .result-details summary {
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent);
+      list-style: none;
+    }
+
+    .result-details summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .related-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .related-item {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: rgba(255,255,255,0.72);
+    }
+
+    .evidence-overview {
+      display: grid;
+      gap: 8px;
+    }
+
+    .snippet-shell {
+      margin-top: 10px;
+      border-radius: 12px;
+      background: rgba(22, 34, 24, 0.04);
+      border: 1px solid rgba(22, 34, 24, 0.08);
+      padding: 10px 12px;
+    }
+
+    .snippet-shell .result-snippet {
+      white-space: pre-wrap;
+    }
+
+    .md-content {
+      color: var(--ink);
+    }
+
+    .md-content > :first-child {
+      margin-top: 0;
+    }
+
+    .md-content > :last-child {
+      margin-bottom: 0;
+    }
+
+    .md-content h1,
+    .md-content h2,
+    .md-content h3,
+    .md-content h4 {
+      margin: 1em 0 0.45em;
+      line-height: 1.2;
+      font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
+    }
+
+    .md-content p {
+      margin: 0.7em 0;
+    }
+
+    .md-content ul,
+    .md-content ol {
+      margin: 0.7em 0;
+      padding-left: 1.25rem;
+    }
+
+    .md-content li + li {
+      margin-top: 0.25rem;
+    }
+
+    .md-content pre {
+      margin: 0.85em 0;
+      padding: 12px;
+      border-radius: 12px;
+      background: #182019;
+      color: #d8ebdc;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .md-content code {
+      font: 12px/1.5 "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      background: rgba(22, 34, 24, 0.08);
+      border-radius: 6px;
+      padding: 1px 5px;
+    }
+
+    .md-content pre code {
+      background: transparent;
+      padding: 0;
+      color: inherit;
+    }
+
+    .md-content blockquote {
+      margin: 0.85em 0;
+      padding: 0.2em 0 0.2em 0.9em;
+      border-left: 3px solid rgba(31, 107, 72, 0.35);
+      color: var(--muted);
+    }
+
+    .md-content a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .md-ref {
+      display: inline-block;
+      margin: 0 0.12em;
+      padding: 0.06em 0.42em;
+      border-radius: 999px;
+      border: 1px solid rgba(31, 107, 72, 0.18);
+      background: rgba(31, 107, 72, 0.08);
+      color: var(--accent);
+      font: 11px/1.4 "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      vertical-align: baseline;
     }
 
     .hidden {
@@ -706,19 +853,28 @@
         `<div class="result-meta">`,
         badge(`Mode ${escapeHtml(data.mode || "answer")}`),
         badge(`Model ${escapeHtml(data.llm_model || data.llm_backend || "unknown")}`),
+        badge(`Works ${works.length}`),
+        badge(`Chunks ${chunks.length}`),
         `</div>`,
-        `<div class="result-answer">${escapeHtml(data.answer || "")}</div>`,
+        `<div class="result-subtitle">Display mode now renders the answer as Markdown and keeps evidence below as structured cards.</div>`,
+        `<div class="result-answer md-content">${renderMarkdown(data.answer || "")}</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Evidence Snapshot</h3>`,
+        `<div class="evidence-overview">`,
+        `<div class="result-note">Paper-level evidence gives the document identity and coarse context. Chunk-level evidence carries the fine-grained passage text that should support the answer.</div>`,
+        `</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Evidence Works</h3>`,
         works.length
-          ? `<div class="result-list">${works.map(renderWorkCard).join("")}</div>`
+          ? `<div class="result-list">${works.map((item) => renderWorkCard(item, { emphasizeEvidence: true })).join("")}</div>`
           : `<div class="result-note">No work-level evidence attached.</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Evidence Chunks</h3>`,
         chunks.length
-          ? `<div class="result-list">${chunks.map(renderChunkCard).join("")}</div>`
+          ? `<div class="result-list">${chunks.map((item) => renderChunkCard(item, { emphasizeEvidence: true })).join("")}</div>`
           : `<div class="result-note">No chunk-level evidence attached.</div>`,
         `</div>`,
       ].join("");
@@ -763,16 +919,40 @@
             ${badge(`Family ${item.family_size ?? 1}`)}
             ${idParts}
           </div>
-          ${relatedVersions.length ? `<div class="result-card-copy">Related versions: ${escapeHtml(relatedVersions.map((version) => `${version.title || "untitled"} [${version.identifiers?.inspire || version.identifiers?.arxiv || "id"}]`).join(" | "))}</div>` : ``}
+          ${relatedVersions.length ? `
+            <details class="result-details">
+              <summary>Related versions (${relatedVersions.length})</summary>
+              <div class="related-list">
+                ${relatedVersions.map(renderPaperVersionCard).join("")}
+              </div>
+            </details>
+          ` : ``}
         </div>
       `;
     }
 
-    function renderWorkCard(item) {
+    function renderPaperVersionCard(item) {
+      const ids = item.identifiers || {};
+      const idLabel = ids.inspire || ids.arxiv || ids.doi || "id";
+      return `
+        <div class="related-item">
+          <div class="result-card-title">${escapeHtml(item.title || "Untitled version")}</div>
+          <div class="result-card-meta">
+            ${badge(`Year ${item.year ?? "?"}`)}
+            ${badge(`ID ${escapeHtml(String(idLabel))}`)}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderWorkCard(item, options = {}) {
       const relatedVersions = Array.isArray(item.related_versions) ? item.related_versions : [];
+      const relatedRetrieved = Array.isArray(item.retrieved_family_versions) ? item.retrieved_family_versions : [];
+      const abstract = truncateText(item.abstract || "", options.emphasizeEvidence ? 360 : 280) || "No abstract available.";
       return `
         <div class="result-card">
           <div class="result-card-title">${escapeHtml(item.raw_title || item.title || "Untitled work")}</div>
+          <div class="result-card-subtitle">${escapeHtml(item.family_primary_work_id === item.work_id ? "Primary family record" : "Related family record")}</div>
           <div class="result-card-meta">
             ${badge(`Rank ${item.rank ?? "-"}`)}
             ${badge(`Score ${formatScore(item.hybrid_score)}`)}
@@ -781,24 +961,71 @@
             ${badge(`Family ${item.family_size ?? 1}`)}
             ${badge(`${escapeHtml(item.canonical_source || "id")}:${escapeHtml(String(item.canonical_id || item.work_id || ""))}`)}
           </div>
-          <div class="result-card-copy">${escapeHtml(truncateText(item.abstract || "", 280) || "No abstract available.")}</div>
-          ${relatedVersions.length ? `<div class="result-card-copy">Related versions: ${escapeHtml(relatedVersions.map((version) => `${version.member_role || "variant"}: ${version.title || "untitled"} (${version.year || "?"})`).join(" | "))}</div>` : ``}
+          <div class="result-card-copy">${escapeHtml(abstract)}</div>
+          ${(relatedVersions.length || relatedRetrieved.length) ? `
+            <details class="result-details">
+              <summary>Version details (${relatedVersions.length || relatedRetrieved.length})</summary>
+              <div class="related-list">
+                ${relatedVersions.map(renderWorkVersionCard).join("")}
+                ${relatedRetrieved.map(renderRetrievedVersionCard).join("")}
+              </div>
+            </details>
+          ` : ``}
         </div>
       `;
     }
 
-    function renderChunkCard(item) {
+    function renderWorkVersionCard(version) {
+      return `
+        <div class="related-item">
+          <div class="result-card-title">${escapeHtml(version.title || "Untitled version")}</div>
+          <div class="result-card-meta">
+            ${badge(`Role ${escapeHtml(version.member_role || "variant")}`)}
+            ${badge(`Year ${version.year ?? "?"}`)}
+            ${badge(`${escapeHtml(version.canonical_source || "id")}:${escapeHtml(String(version.canonical_id || version.work_id || ""))}`)}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderRetrievedVersionCard(version) {
+      return `
+        <div class="related-item">
+          <div class="result-card-title">${escapeHtml(version.title || "Retrieved related version")}</div>
+          <div class="result-card-meta">
+            ${badge(`Retrieved rank ${version.rank ?? "-"}`)}
+            ${badge(`Score ${formatScore(version.hybrid_score)}`)}
+            ${badge(`Year ${version.year ?? "?"}`)}
+            ${badge(`${escapeHtml(version.canonical_source || "id")}:${escapeHtml(String(version.canonical_id || version.work_id || ""))}`)}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderChunkCard(item, options = {}) {
+      const fullText = String(item.clean_text || item.text || "").trim();
+      const preview = truncateText(fullText, options.emphasizeEvidence ? 240 : 420) || "No chunk text available.";
       return `
         <div class="result-card">
           <div class="result-card-title">${escapeHtml(item.raw_title || `Chunk ${item.chunk_id || ""}`)}</div>
+          <div class="result-card-subtitle">${escapeHtml(item.section_hint || "No section hint")}</div>
           <div class="result-card-meta">
             ${badge(`Rank ${item.rank ?? "-"}`)}
             ${badge(`Score ${formatScore(item.hybrid_score)}`)}
-            ${badge(`Section ${escapeHtml(item.section_hint || "unknown")}`)}
             ${badge(`Role ${escapeHtml(item.chunk_role || "chunk")}`)}
+            ${badge(`Work ${escapeHtml(String(item.work_id || "-"))}`)}
+            ${item.family_size ? badge(`Family ${item.family_size}`) : ``}
             ${badge(`Chunk ${escapeHtml(String(item.chunk_id || ""))}`)}
           </div>
-          <div class="result-snippet">${escapeHtml(truncateText(item.clean_text || item.text || "", 420) || "No chunk text available.")}</div>
+          <div class="result-card-copy">${escapeHtml(preview)}</div>
+          ${fullText ? `
+            <details class="result-details">
+              <summary>Open full excerpt</summary>
+              <div class="snippet-shell">
+                <div class="result-snippet">${escapeHtml(fullText)}</div>
+              </div>
+            </details>
+          ` : ``}
         </div>
       `;
     }
@@ -844,6 +1071,112 @@
       const normalized = String(text || "").replace(/\s+/g, " ").trim();
       if (!normalized) return "";
       return normalized.length > limit ? normalized.slice(0, limit - 1).trimEnd() + "…" : normalized;
+    }
+
+    function renderMarkdown(text) {
+      const raw = String(text || "").replace(/\r\n/g, "\n");
+      if (!raw.trim()) {
+        return `<p></p>`;
+      }
+
+      const codeBlocks = [];
+      const protectedText = raw.replace(/```([^\n`]*)\n([\s\S]*?)```/g, (_, language, code) => {
+        const token = `@@CODEBLOCK${codeBlocks.length}@@`;
+        codeBlocks.push({
+          language: String(language || "").trim(),
+          code: String(code || "").replace(/\n$/, ""),
+        });
+        return token;
+      });
+
+      const lines = protectedText.split("\n");
+      const html = [];
+      let index = 0;
+
+      while (index < lines.length) {
+        const line = lines[index];
+        const trimmed = line.trim();
+
+        if (!trimmed) {
+          index += 1;
+          continue;
+        }
+
+        const codeBlockMatch = trimmed.match(/^@@CODEBLOCK(\d+)@@$/);
+        if (codeBlockMatch) {
+          const block = codeBlocks[Number(codeBlockMatch[1])];
+          if (block) {
+            const lang = block.language ? `<div class="result-card-subtitle">${escapeHtml(block.language)}</div>` : "";
+            html.push(`${lang}<pre><code>${escapeHtml(block.code)}</code></pre>`);
+          }
+          index += 1;
+          continue;
+        }
+
+        const headingMatch = trimmed.match(/^(#{1,4})\s+(.*)$/);
+        if (headingMatch) {
+          const level = headingMatch[1].length;
+          html.push(`<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`);
+          index += 1;
+          continue;
+        }
+
+        if (/^>\s?/.test(trimmed)) {
+          const blockquoteLines = [];
+          while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+            blockquoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
+            index += 1;
+          }
+          html.push(`<blockquote>${blockquoteLines.map((item) => `<p>${renderInlineMarkdown(item)}</p>`).join("")}</blockquote>`);
+          continue;
+        }
+
+        if (/^(?:[-*]\s+|\d+\.\s+)/.test(trimmed)) {
+          const ordered = /^\d+\.\s+/.test(trimmed);
+          const tag = ordered ? "ol" : "ul";
+          const items = [];
+          while (index < lines.length && /^(?:[-*]\s+|\d+\.\s+)/.test(lines[index].trim())) {
+            items.push(lines[index].trim().replace(/^(?:[-*]\s+|\d+\.\s+)/, ""));
+            index += 1;
+          }
+          html.push(`<${tag}>${items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${tag}>`);
+          continue;
+        }
+
+        const paragraphLines = [];
+        while (index < lines.length && lines[index].trim()) {
+          paragraphLines.push(lines[index]);
+          index += 1;
+        }
+        const paragraph = paragraphLines.join("\n").trim();
+        html.push(`<p>${renderInlineMarkdown(paragraph).replace(/\n/g, "<br>")}</p>`);
+      }
+
+      return html.join("");
+    }
+
+    function renderInlineMarkdown(text) {
+      const raw = String(text || "");
+      const codeTokens = [];
+      const linkTokens = [];
+      let tokenized = raw.replace(/`([^`]+)`/g, (_, value) => {
+        const token = `@@INLINECODE${codeTokens.length}@@`;
+        codeTokens.push(`<code>${escapeHtml(value)}</code>`);
+        return token;
+      });
+      tokenized = tokenized.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, url) => {
+        const token = `@@INLINELINK${linkTokens.length}@@`;
+        linkTokens.push(`<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`);
+        return token;
+      });
+
+      let html = escapeHtml(tokenized);
+      html = html.replace(/\[([WC]\d+)\]/g, (_, ref) => `<span class="md-ref">[${escapeHtml(ref)}]</span>`);
+      html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+      html = html.replace(/@@INLINECODE(\d+)@@/g, (_, rawIndex) => codeTokens[Number(rawIndex)] || "");
+      html = html.replace(/@@INLINELINK(\d+)@@/g, (_, rawIndex) => linkTokens[Number(rawIndex)] || "");
+      return html;
     }
 
     function escapeHtml(text) {
