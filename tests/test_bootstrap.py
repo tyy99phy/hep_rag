@@ -485,7 +485,15 @@ class TestFullTextMaterialization(unittest.TestCase):
                             "arxiv_eprints": [{"value": "2401.00001"}],
                         }
                     }
+                    target_hit = {
+                        "metadata": {
+                            "control_number": 334,
+                            "titles": [{"title": "First paper on the topic"}],
+                            "dois": [{"value": "10.1000/first-paper"}],
+                        }
+                    }
                     upsert_work_from_hit(conn, collection_id=collection_id, hit=hit)
+                    upsert_work_from_hit(conn, collection_id=collection_id, hit=target_hit)
                     work_id = conn.execute("SELECT work_id FROM works WHERE canonical_id = '333'").fetchone()[0]
                     conn.commit()
 
@@ -504,7 +512,7 @@ class TestFullTextMaterialization(unittest.TestCase):
                                 {"type": "equation", "latex": r"E = mc^2", "page_idx": 2},
                                 {"type": "image", "caption": "Observed limit [6]", "image_path": "figures/fig1.png", "page_idx": 3},
                                 {"type": "text", "text_level": 1, "text": "References", "page_idx": 4},
-                                {"type": "text", "text": "[1] First paper on the topic.", "page_idx": 4},
+                                {"type": "text", "text": "[1] First paper on the topic. https://doi.org/10.1000/first-paper.", "page_idx": 4},
                             ],
                             ensure_ascii=False,
                         ),
@@ -526,6 +534,9 @@ class TestFullTextMaterialization(unittest.TestCase):
                     self.assertEqual(summary["chunk_roles"]["abstract_chunk"], 1)
                     self.assertEqual(summary["chunk_roles"]["formula_window"], 1)
                     self.assertEqual(summary["chunk_roles"]["asset_window"], 1)
+                    self.assertEqual(summary["citations_written"], 1)
+                    self.assertEqual(summary["citations_resolved"], 1)
+                    self.assertEqual(summary["bibliography_entries"], 1)
 
                     abstract_texts = [
                         row["clean_text"]
@@ -611,6 +622,19 @@ class TestFullTextMaterialization(unittest.TestCase):
                         conn.execute("SELECT COUNT(*) FROM formulas WHERE document_id = ?", (summary["document_id"],)).fetchone()[0],
                         1,
                     )
+                    citation_row = conn.execute(
+                        """
+                        SELECT dst_source, dst_external_id, dst_work_id, resolution_status, raw_json
+                        FROM citations
+                        WHERE src_work_id = ?
+                        """,
+                        (int(work_id),),
+                    ).fetchone()
+                    self.assertEqual(citation_row["dst_source"], "doi")
+                    self.assertEqual(citation_row["dst_external_id"], "10.1000/first-paper")
+                    self.assertIsNotNone(citation_row["dst_work_id"])
+                    self.assertEqual(citation_row["resolution_status"], "resolved")
+                    self.assertIn("mineru_bibliography", citation_row["raw_json"])
 
     def test_cli_import_mineru_and_show_document(self) -> None:
         with tempfile.TemporaryDirectory() as td:

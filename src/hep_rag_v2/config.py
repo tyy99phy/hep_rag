@@ -27,6 +27,7 @@ DEFAULT_INSPIRE_FIELDS = [
     "keywords",
     "preprint_date",
     "publication_info",
+    "references",
 ]
 
 DEFAULT_CONFIG: dict[str, Any] = {

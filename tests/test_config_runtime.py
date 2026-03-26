@@ -58,6 +58,7 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertFalse(config["online"]["published_only"])
         self.assertTrue(config["query_rewrite"]["enabled"])
         self.assertEqual(config["query_rewrite"]["max_queries"], 4)
+        self.assertIn("references", config["online"]["fields"])
 
     def test_build_search_query_only_appends_published_filter_when_requested(self) -> None:
         self.assertEqual(

@@ -52,6 +52,7 @@ ONLINE_REQUIRED_FIELDS = (
     "document_type",
     "earliest_date",
     "publication_info",
+    "references",
 )
 INSPIRE_QUERY_FIELD_PATTERN = re.compile(
     r"\b(?:collaboration|collection|collections|title|abstract|keyword|keywords|recid|doi|arxiv|author|document_type|date|earliest_date)\s*:",

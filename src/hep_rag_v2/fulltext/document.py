@@ -20,6 +20,13 @@ INLINE_CITATION_PATTERNS = [
     re.compile(r"(?:Refs?\.?|references?)\s*\[[0-9,\s;–-]+\]", re.IGNORECASE),
     re.compile(r"\[[0-9,\s;–-]+\]"),
 ]
+DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
+ARXIV_PATTERN = re.compile(
+    r"\b(?:arxiv\s*:?\s*)?((?:\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?)\b",
+    re.IGNORECASE,
+)
+BRACKETED_REFERENCE_PATTERN = re.compile(r"(?=(?:^|\s)\[\d+\]\s*)")
+NUMBERED_REFERENCE_PATTERN = re.compile(r"(?=(?:^|\s)\d+\.\s+)")
 
 ABSTRACT_HEADINGS = {"abstract"}
 BIBLIOGRAPHY_HEADINGS = {"references", "reference", "bibliography"}
@@ -351,6 +358,12 @@ def materialize_mineru_document(
         ).fetchall()
     )
     retrievable_blocks = sum(1 for block in inserted_blocks if block["is_retrievable"])
+    citation_summary = _rewrite_mineru_bibliography_citations(
+        conn,
+        work_id=work_id,
+        document_id=document_id,
+        blocks=inserted_blocks,
+    )
     return {
         "document_id": document_id,
         "work_id": work_id,
@@ -361,6 +374,9 @@ def materialize_mineru_document(
         "chunks": len(chunk_rows),
         "block_roles": role_counts,
         "chunk_roles": chunk_counts,
+        "citations_written": int(citation_summary["citations_written"]),
+        "citations_resolved": int(citation_summary["citations_resolved"]),
+        "bibliography_entries": int(citation_summary["bibliography_entries"]),
     }
 
 
@@ -626,6 +642,186 @@ def _clean_block_text(raw_text: str, *, block_role: str, block_type: str) -> tup
     text = re.sub(r"\(\s*\)", "", text)
     text = re.sub(r"\s{2,}", " ", text)
     return text.strip(), {"citation_markers_removed": removed}
+
+
+def _rewrite_mineru_bibliography_citations(
+    conn: sqlite3.Connection,
+    *,
+    work_id: int,
+    document_id: int,
+    blocks: list[dict[str, Any]],
+) -> dict[str, int]:
+    from hep_rag_v2.metadata import find_work_id
+
+    existing_target_keys: set[tuple[str, str]] = set()
+    stale_citation_ids: list[int] = []
+    for row in conn.execute(
+        """
+        SELECT citation_id, dst_source, dst_external_id, raw_json
+        FROM citations
+        WHERE src_work_id = ?
+        """,
+        (work_id,),
+    ).fetchall():
+        raw_payload = _load_raw_citation_payload(row["raw_json"])
+        if raw_payload.get("source") == "mineru_bibliography":
+            stale_citation_ids.append(int(row["citation_id"]))
+            continue
+        dst_source = str(row["dst_source"] or "").strip()
+        dst_external_id = str(row["dst_external_id"] or "").strip()
+        if dst_source and dst_external_id:
+            existing_target_keys.add((dst_source, dst_external_id))
+
+    if stale_citation_ids:
+        conn.executemany(
+            "DELETE FROM citations WHERE citation_id = ?",
+            [(citation_id,) for citation_id in stale_citation_ids],
+        )
+
+    written = 0
+    resolved = 0
+    seen_raw_hashes: set[str] = set()
+    bibliography_entries = _bibliography_entries_from_blocks(blocks)
+    for entry_index, entry_text in enumerate(bibliography_entries, start=1):
+        target = _bibliography_target(entry_text)
+        raw_hash = _hash_text(entry_text)
+        if target is not None:
+            if target in existing_target_keys:
+                continue
+            existing_target_keys.add(target)
+        elif raw_hash and raw_hash in seen_raw_hashes:
+            continue
+        if raw_hash:
+            seen_raw_hashes.add(raw_hash)
+
+        dst_work_id = None
+        dst_source = None
+        dst_external_id = None
+        if target is not None:
+            dst_source, dst_external_id = target
+            dst_work_id = find_work_id(conn, id_type=dst_source, id_value=dst_external_id)
+
+        raw_payload = {
+            "source": "mineru_bibliography",
+            "document_id": document_id,
+            "entry_index": entry_index,
+            "entry_text": entry_text,
+        }
+        if dst_source and dst_external_id:
+            raw_payload["target"] = {
+                "dst_source": dst_source,
+                "dst_external_id": dst_external_id,
+            }
+
+        conn.execute(
+            """
+            INSERT INTO citations (
+              src_work_id, dst_work_id, dst_source, dst_external_id, raw_json, resolution_status
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                work_id,
+                dst_work_id,
+                dst_source,
+                dst_external_id,
+                json.dumps(raw_payload, ensure_ascii=False),
+                "resolved" if dst_work_id is not None else "unresolved",
+            ),
+        )
+        written += 1
+        if dst_work_id is not None:
+            resolved += 1
+
+    return {
+        "citations_written": written,
+        "citations_resolved": resolved,
+        "bibliography_entries": len(bibliography_entries),
+    }
+
+
+def _bibliography_entries_from_blocks(blocks: list[dict[str, Any]]) -> list[str]:
+    entries: list[str] = []
+    seen: set[str] = set()
+    for block in blocks:
+        if str(block.get("block_role") or "") != "bibliography":
+            continue
+        if bool(block.get("is_heading")):
+            continue
+        text = str(block.get("raw_text") or block.get("clean_text") or "").strip()
+        if not text:
+            continue
+        for entry in _split_bibliography_entries(text):
+            normalized = _single_line(entry)
+            if not normalized or normalized.casefold() in seen:
+                continue
+            seen.add(normalized.casefold())
+            entries.append(normalized)
+    return entries
+
+
+def _split_bibliography_entries(text: str) -> list[str]:
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not compact:
+        return []
+    for pattern in (BRACKETED_REFERENCE_PATTERN, NUMBERED_REFERENCE_PATTERN):
+        parts: list[str] = []
+        for part in pattern.split(compact):
+            cleaned = _clean_bibliography_entry(part)
+            if cleaned:
+                parts.append(cleaned)
+        if len(parts) >= 2:
+            return parts
+    cleaned = _clean_bibliography_entry(compact)
+    return [cleaned] if cleaned else []
+
+
+def _clean_bibliography_entry(text: str) -> str:
+    value = re.sub(r"^(?:\[\d+\]|\d+\.)\s*", "", str(text or "").strip())
+    value = re.sub(r"\s+", " ", value).strip(" ;,")
+    if len(value) < 12:
+        return ""
+    if value.casefold() in BIBLIOGRAPHY_HEADINGS:
+        return ""
+    return value
+
+
+def _bibliography_target(entry_text: str) -> tuple[str, str] | None:
+    doi = _extract_doi(entry_text)
+    if doi:
+        return ("doi", doi)
+    arxiv_id = _extract_arxiv_id(entry_text)
+    if arxiv_id:
+        return ("arxiv", arxiv_id)
+    return None
+
+
+def _extract_doi(text: str) -> str | None:
+    match = DOI_PATTERN.search(str(text or ""))
+    if not match:
+        return None
+    value = match.group(0).rstrip(").,;]")
+    return value.lower()
+
+
+def _extract_arxiv_id(text: str) -> str | None:
+    match = ARXIV_PATTERN.search(str(text or ""))
+    if not match:
+        return None
+    value = match.group(1).strip().rstrip(").,;]")
+    lower = value.casefold()
+    if lower.startswith("10.") or len(lower) < 7:
+        return None
+    return value
+
+
+def _load_raw_citation_payload(raw_json: str | None) -> dict[str, Any]:
+    if not raw_json:
+        return {}
+    try:
+        payload = json.loads(raw_json)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _normalize_latex(text: str) -> str:
