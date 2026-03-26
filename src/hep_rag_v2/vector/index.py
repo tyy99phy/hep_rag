@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,6 +21,8 @@ from .embedding import (
 
 
 ProgressCallback = Callable[[str], None] | None
+_LOCAL_INDEX_CACHE_LOCK = threading.Lock()
+_LOCAL_INDEX_CACHE: dict[tuple[str, int, int], LocalIndex] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +135,7 @@ def _write_local_index(
     for key, value in (extras or {}).items():
         payload[key] = np.asarray(value, dtype=np.float32)
     np.savez_compressed(matrix_path, **payload)
+    _invalidate_local_index_cache(matrix_path)
     meta_path.write_text(
         json.dumps(
             {
@@ -156,6 +160,12 @@ def _load_local_index(*, target: str, model: str) -> LocalIndex:
             vectors=np.zeros((0, DEFAULT_VECTOR_DIM), dtype=np.float32),
             extras={},
         )
+    stat = matrix_path.stat()
+    cache_key = (str(matrix_path), int(stat.st_mtime_ns), int(stat.st_size))
+    with _LOCAL_INDEX_CACHE_LOCK:
+        cached = _LOCAL_INDEX_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
     with np.load(matrix_path, allow_pickle=False) as payload:
         ids = np.asarray(payload["ids"], dtype=np.int64)
         vectors = np.asarray(payload["vectors"], dtype=np.float32)
@@ -164,7 +174,23 @@ def _load_local_index(*, target: str, model: str) -> LocalIndex:
             for key in payload.files
             if key not in {"ids", "vectors"}
         }
-    return LocalIndex(ids=ids, vectors=vectors, extras=extras)
+    index = LocalIndex(ids=ids, vectors=vectors, extras=extras)
+    with _LOCAL_INDEX_CACHE_LOCK:
+        _LOCAL_INDEX_CACHE.pop(cache_key, None)
+        _clear_stale_cache_entries(str(matrix_path))
+        _LOCAL_INDEX_CACHE[cache_key] = index
+    return index
+
+
+def _invalidate_local_index_cache(matrix_path: Path) -> None:
+    with _LOCAL_INDEX_CACHE_LOCK:
+        _clear_stale_cache_entries(str(matrix_path))
+
+
+def _clear_stale_cache_entries(path_str: str) -> None:
+    stale_keys = [key for key in _LOCAL_INDEX_CACHE if key[0] == path_str]
+    for key in stale_keys:
+        _LOCAL_INDEX_CACHE.pop(key, None)
 
 
 # ---------------------------------------------------------------------------

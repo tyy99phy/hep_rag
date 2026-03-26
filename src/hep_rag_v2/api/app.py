@@ -32,6 +32,7 @@ class QueryRequest(BaseModel):
     collection_name: str | None = None
     target: str | None = None
     limit: int | None = Field(default=None, ge=1)
+    max_parallelism: int | None = Field(default=None, ge=1)
     model: str | None = None
 
 
@@ -42,6 +43,7 @@ class AskRequest(QueryRequest):
 class FetchPapersRequest(BaseModel):
     query: str = Field(min_length=1)
     limit: int = Field(default=20, ge=1)
+    max_parallelism: int | None = Field(default=None, ge=1)
 
 
 class GraphRequest(BaseModel):
@@ -65,6 +67,7 @@ class IngestOnlineJobRequest(BaseModel):
     query: str = Field(min_length=1)
     collection_name: str | None = None
     limit: int = Field(default=20, ge=1)
+    max_parallelism: int | None = Field(default=None, ge=1)
     download_limit: int | None = Field(default=None, ge=1)
     parse_limit: int | None = Field(default=None, ge=0)
     replace_existing: bool = False
@@ -180,6 +183,7 @@ def create_app(
                 limit=body.limit,
                 target=body.target,
                 collection_name=body.collection_name,
+                max_parallelism=body.max_parallelism,
                 model=body.model,
             )
         )
@@ -195,6 +199,7 @@ def create_app(
                 limit=body.limit,
                 target=body.target,
                 collection_name=body.collection_name,
+                max_parallelism=body.max_parallelism,
                 model=body.model,
             )
         )
@@ -207,6 +212,7 @@ def create_app(
                 config,
                 query=body.query,
                 limit=body.limit,
+                max_parallelism=body.max_parallelism,
             )
         )
 
@@ -265,6 +271,7 @@ def create_app(
                 query=body.query,
                 limit=body.limit,
                 collection_name=body.collection_name,
+                max_parallelism=body.max_parallelism,
                 download_limit=body.download_limit,
                 parse_limit=body.parse_limit,
                 replace_existing=body.replace_existing,

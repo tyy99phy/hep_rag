@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
 from typing import Any
 
 import numpy as np
 
+from hep_rag_v2.db import connect
 from hep_rag_v2.graph import graph_neighbors
 from hep_rag_v2.metadata import family_payload_map
 from hep_rag_v2.query import analyze_query, is_relation_query, is_result_query, query_match_stats
@@ -27,6 +30,21 @@ RRF_K = 60
 # ---------------------------------------------------------------------------
 # DB fetch helpers
 # ---------------------------------------------------------------------------
+
+def _run_parallel_rankers(
+    *,
+    max_parallelism: int,
+    bm25_task: Callable[[], list[dict[str, Any]]],
+    vector_task: Callable[[], list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    workers = max(1, min(2, int(max_parallelism)))
+    if workers <= 1:
+        return bm25_task(), vector_task()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        bm25_future = pool.submit(bm25_task)
+        vector_future = pool.submit(vector_task)
+        return bm25_future.result(), vector_future.result()
+
 
 def _allowed_work_ids(conn: sqlite3.Connection, *, collection: str | None) -> set[int] | None:
     if not collection:
@@ -506,15 +524,32 @@ def search_works_hybrid(
     model: str = DEFAULT_VECTOR_MODEL,
     graph_expand: int = 0,
     seed_limit: int = 5,
+    max_parallelism: int = 1,
 ) -> list[dict[str, Any]]:
     profile = analyze_query(query)
-    bm25_rows = search_works_bm25(conn, query=query, collection=collection, limit=max(limit * 3, 50))
+    search_limit = max(limit * 3, 50)
+    if max_parallelism <= 1:
+        bm25_rows = search_works_bm25(conn, query=query, collection=collection, limit=search_limit)
+        vector_rows = search_works_vector(conn, query=query, collection=collection, limit=search_limit, model=model)
+    else:
+        def _bm25_task() -> list[dict[str, Any]]:
+            with connect() as read_conn:
+                return search_works_bm25(read_conn, query=query, collection=collection, limit=search_limit)
+
+        def _vector_task() -> list[dict[str, Any]]:
+            with connect() as read_conn:
+                return search_works_vector(read_conn, query=query, collection=collection, limit=search_limit, model=model)
+
+        bm25_rows, vector_rows = _run_parallel_rankers(
+            max_parallelism=max_parallelism,
+            bm25_task=_bm25_task,
+            vector_task=_vector_task,
+        )
     bm25_rows = _annotate_query_agreement(
         bm25_rows,
         profile=profile,
         text_fields=("raw_title", "indexed_abstract", "indexed_collaborations"),
     )
-    vector_rows = search_works_vector(conn, query=query, collection=collection, limit=max(limit * 3, 50), model=model)
     vector_rows = _annotate_query_agreement(
         vector_rows,
         profile=profile,
@@ -586,15 +621,32 @@ def search_chunks_hybrid(
     collection: str | None = None,
     limit: int = 20,
     model: str = DEFAULT_VECTOR_MODEL,
+    max_parallelism: int = 1,
 ) -> list[dict[str, Any]]:
     profile = analyze_query(query)
-    bm25_rows = search_chunks_bm25(conn, query=query, collection=collection, limit=max(limit * 3, 50))
+    search_limit = max(limit * 3, 50)
+    if max_parallelism <= 1:
+        bm25_rows = search_chunks_bm25(conn, query=query, collection=collection, limit=search_limit)
+        vector_rows = search_chunks_vector(conn, query=query, collection=collection, limit=search_limit, model=model)
+    else:
+        def _bm25_task() -> list[dict[str, Any]]:
+            with connect() as read_conn:
+                return search_chunks_bm25(read_conn, query=query, collection=collection, limit=search_limit)
+
+        def _vector_task() -> list[dict[str, Any]]:
+            with connect() as read_conn:
+                return search_chunks_vector(read_conn, query=query, collection=collection, limit=search_limit, model=model)
+
+        bm25_rows, vector_rows = _run_parallel_rankers(
+            max_parallelism=max_parallelism,
+            bm25_task=_bm25_task,
+            vector_task=_vector_task,
+        )
     bm25_rows = _annotate_query_agreement(
         bm25_rows,
         profile=profile,
         text_fields=("raw_title", "section_hint", "clean_text"),
     )
-    vector_rows = search_chunks_vector(conn, query=query, collection=collection, limit=max(limit * 3, 50), model=model)
     vector_rows = _annotate_query_agreement(
         vector_rows,
         profile=profile,

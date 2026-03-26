@@ -44,6 +44,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "published_only": False,
         "query_suffix": "",
         "page_size": 25,
+        "max_parallelism": 4,
         "timeout_sec": 60,
         "retries": 3,
         "sleep_sec": 0.2,
@@ -92,6 +93,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "retrieval": {
         "target": "auto",
         "limit": 8,
+        "max_parallelism": 2,
         "graph_expand": None,
         "seed_limit": 5,
         "chunk_limit": 12,

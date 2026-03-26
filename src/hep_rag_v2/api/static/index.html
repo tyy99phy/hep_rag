@@ -692,6 +692,10 @@
             <label for="parse-limit">Parse Limit</label>
             <input id="parse-limit" type="number" min="0" placeholder="optional">
           </div>
+          <div>
+            <label for="max-parallelism">Max Parallel</label>
+            <input id="max-parallelism" type="number" min="1" value="4">
+          </div>
         </div>
         <div class="actions">
           <button id="fetch-btn">Fetch Papers</button>
@@ -725,6 +729,7 @@
   <script>
     const TOKEN_STORAGE_KEY = "hep-rag-api-token";
     const RESULT_MODE_STORAGE_KEY = "hep-rag-result-mode";
+    const PARALLELISM_STORAGE_KEY = "hep-rag-max-parallelism";
     const state = {
       currentJobId: null,
       pollTimer: null,
@@ -741,6 +746,7 @@
     const statusEl = document.getElementById("status-strip");
     const authStatusEl = document.getElementById("auth-strip");
     const tokenInputEl = document.getElementById("api-token");
+    const maxParallelismInputEl = document.getElementById("max-parallelism");
     const resultDisplayBtnEl = document.getElementById("result-display-btn");
     const resultRawBtnEl = document.getElementById("result-raw-btn");
 
@@ -1342,6 +1348,7 @@
         query: document.getElementById("query").value.trim(),
         collection_name: blankToNull(document.getElementById("collection").value),
         limit: parseOptionalInt(document.getElementById("limit").value),
+        max_parallelism: parseOptionalInt(document.getElementById("max-parallelism").value),
         target: blankToNull(document.getElementById("target").value),
       };
     }
@@ -1416,7 +1423,11 @@
       try {
         const data = await callJson("/fetch-papers", {
           method: "POST",
-          body: JSON.stringify({ query: payload.query, limit: payload.limit || 8 }),
+          body: JSON.stringify({
+            query: payload.query,
+            limit: payload.limit || 8,
+            max_parallelism: parseOptionalInt(document.getElementById("max-parallelism").value),
+          }),
         });
         setResult(data);
         setStatus(`Fetched ${data.effective_count ?? 0} candidate papers.`);
@@ -1466,6 +1477,7 @@
       if (state.authEnabled && !readToken()) return setStatus("API token required.");
       payload.download_limit = parseOptionalInt(document.getElementById("download-limit").value);
       payload.parse_limit = parseOptionalInt(document.getElementById("parse-limit").value);
+      payload.max_parallelism = parseOptionalInt(document.getElementById("max-parallelism").value);
       setStatus("Submitting ingest job...");
       try {
         const data = await callJson("/jobs/ingest-online", {
@@ -1523,8 +1535,17 @@
     resultDisplayBtnEl.addEventListener("click", () => setResultMode("display"));
     resultRawBtnEl.addEventListener("click", () => setResultMode("raw"));
     tokenInputEl.value = window.localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+    maxParallelismInputEl.value = window.localStorage.getItem(PARALLELISM_STORAGE_KEY) || maxParallelismInputEl.value;
     tokenInputEl.addEventListener("input", () => {
       window.localStorage.setItem(TOKEN_STORAGE_KEY, readToken());
+    });
+    maxParallelismInputEl.addEventListener("input", () => {
+      const value = String(maxParallelismInputEl.value || "").trim();
+      if (value) {
+        window.localStorage.setItem(PARALLELISM_STORAGE_KEY, value);
+      } else {
+        window.localStorage.removeItem(PARALLELISM_STORAGE_KEY);
+      }
     });
     tokenInputEl.addEventListener("change", () => {
       if (!state.authEnabled || readToken()) {

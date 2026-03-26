@@ -130,6 +130,27 @@ def _paper_progress_label(
     return " ".join(parts)
 
 
+def _resolve_parallelism(
+    *,
+    requested: int | None,
+    configured: Any,
+    fallback: int,
+    ceiling: int | None = None,
+) -> int:
+    value = requested
+    if value is None:
+        try:
+            value = int(configured) if configured not in {None, ""} else None
+        except (TypeError, ValueError):
+            value = None
+    if value is None:
+        value = int(fallback)
+    value = max(1, int(value))
+    if ceiling is not None:
+        value = min(value, max(1, int(ceiling)))
+    return value
+
+
 def _prefixed_progress(progress: ProgressCallback, prefix: str) -> ProgressCallback:
     if progress is None:
         return None
@@ -150,6 +171,7 @@ def _search_online_hits(
     *,
     query: str,
     limit: int,
+    max_parallelism: int | None = None,
     progress: ProgressCallback = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     online = config.get("online") or {}
@@ -171,24 +193,62 @@ def _search_online_hits(
         max(1, limit),
         int(query_cfg.get("per_query_limit") or max(limit * 3, 10)),
     )
-    ranked_batches: list[tuple[str, list[dict[str, Any]]]] = []
-    for idx, search_query in enumerate(search_plan["queries"], start=1):
-        if len(search_plan["queries"]) == 1:
-            _emit_progress(progress, "searching INSPIRE...")
-        else:
-            _emit_progress(progress, f"searching INSPIRE ({idx}/{len(search_plan['queries'])})...")
-        hits = search_literature(
-            search_query,
-            limit=per_query_limit,
-            page_size=page_size,
-            fields=fields,
-            published_only=published_only,
-            query_suffix=query_suffix,
-            timeout=timeout,
-            retries=retries,
-            sleep_sec=sleep_sec,
+    search_workers = _resolve_parallelism(
+        requested=max_parallelism,
+        configured=online.get("max_parallelism"),
+        fallback=4,
+        ceiling=max(1, len(search_plan["queries"])),
+    )
+    search_plan["max_parallelism"] = search_workers
+    ranked_batches: list[tuple[str, list[dict[str, Any]]]] = [("", []) for _ in search_plan["queries"]]
+
+    if len(search_plan["queries"]) == 1 or search_workers <= 1:
+        for idx, search_query in enumerate(search_plan["queries"], start=1):
+            if len(search_plan["queries"]) == 1:
+                _emit_progress(progress, "searching INSPIRE...")
+            else:
+                _emit_progress(progress, f"searching INSPIRE ({idx}/{len(search_plan['queries'])})...")
+            hits = search_literature(
+                search_query,
+                limit=per_query_limit,
+                page_size=page_size,
+                fields=fields,
+                published_only=published_only,
+                query_suffix=query_suffix,
+                timeout=timeout,
+                retries=retries,
+                sleep_sec=sleep_sec,
+            )
+            ranked_batches[idx - 1] = (search_query, hits)
+    else:
+        _emit_progress(
+            progress,
+            f"searching INSPIRE with up to {search_workers} parallel requests...",
         )
-        ranked_batches.append((search_query, hits))
+        with ThreadPoolExecutor(max_workers=search_workers) as pool:
+            futures = {
+                pool.submit(
+                    search_literature,
+                    search_query,
+                    limit=per_query_limit,
+                    page_size=page_size,
+                    fields=fields,
+                    published_only=published_only,
+                    query_suffix=query_suffix,
+                    timeout=timeout,
+                    retries=retries,
+                    sleep_sec=sleep_sec,
+                ): (idx, search_query)
+                for idx, search_query in enumerate(search_plan["queries"], start=1)
+            }
+            for future in as_completed(futures):
+                idx, search_query = futures[future]
+                hits = future.result()
+                ranked_batches[idx - 1] = (search_query, hits)
+                _emit_progress(
+                    progress,
+                    f"finished INSPIRE query ({idx}/{len(search_plan['queries'])}) results={len(hits)}",
+                )
 
     merged_hits, merge_stats = _merge_ranked_hits(ranked_batches, limit=max(1, limit))
     search_plan["published_only"] = published_only
@@ -936,6 +996,7 @@ def fetch_online_candidates(
     *,
     query: str,
     limit: int,
+    max_parallelism: int | None = None,
     progress: ProgressCallback = None,
 ) -> dict[str, Any]:
     ensure_db()
@@ -944,6 +1005,7 @@ def fetch_online_candidates(
         config,
         query=query,
         limit=limit,
+        max_parallelism=max_parallelism,
         progress=progress,
     )
     with connect() as conn:
@@ -970,6 +1032,7 @@ def ingest_online(
     query: str,
     limit: int,
     collection_name: str | None = None,
+    max_parallelism: int | None = None,
     download_limit: int | None = None,
     parse_limit: int | None = None,
     replace_existing: bool = False,
@@ -987,11 +1050,17 @@ def ingest_online(
         config,
         query=query,
         limit=limit,
+        max_parallelism=max_parallelism,
         progress=progress,
     )
 
     download_cap = max(0, download_limit if download_limit is not None else len(hits))
     parse_cap = 0 if skip_parse else max(0, parse_limit if parse_limit is not None else download_cap)
+    max_workers = _resolve_parallelism(
+        requested=max_parallelism,
+        configured=download_cfg.get("max_download_workers"),
+        fallback=4,
+    )
 
     summary: dict[str, Any] = {
         "query": query,
@@ -1012,6 +1081,7 @@ def ingest_online(
             "citations_written": 0,
         },
         "downloads": {
+            "max_parallelism": max_workers,
             "attempted": 0,
             "ok": 0,
             "failed": 0,
@@ -1030,7 +1100,6 @@ def ingest_online(
     }
 
     mineru_client = _build_mineru_client(config)
-    max_workers = max(1, int(download_cfg.get("max_download_workers") or 4))
 
     with connect() as conn:
         hits, local_summary = _annotate_hits_with_local_status(
@@ -1403,6 +1472,7 @@ def retrieve(
     limit: int | None = None,
     target: str | None = None,
     collection_name: str | None = None,
+    max_parallelism: int | None = None,
     model: str | None = None,
     progress: ProgressCallback = None,
 ) -> dict[str, Any]:
@@ -1413,6 +1483,12 @@ def retrieve(
     embedding_model = str(model or (config.get("embedding") or {}).get("model") or DEFAULT_VECTOR_MODEL)
     limit_value = max(1, int(limit or retrieval_cfg.get("limit") or 8))
     chunk_limit = max(limit_value, int(retrieval_cfg.get("chunk_limit") or max(limit_value, 12)))
+    retrieval_workers = _resolve_parallelism(
+        requested=max_parallelism,
+        configured=retrieval_cfg.get("max_parallelism"),
+        fallback=2,
+        ceiling=2,
+    )
 
     routing = route_query(query) if requested_target == "auto" else {
         "target": requested_target,
@@ -1436,6 +1512,7 @@ def retrieve(
                 model=embedding_model,
                 graph_expand=int(graph_expand),
                 seed_limit=int(retrieval_cfg.get("seed_limit") or 5),
+                max_parallelism=retrieval_workers,
             )
             _emit_progress(progress, "collecting supporting chunks...")
             chunks = _supporting_chunks(
@@ -1445,6 +1522,7 @@ def retrieve(
                 model=embedding_model,
                 work_ids=[int(row["work_id"]) for row in works],
                 limit=chunk_limit,
+                max_parallelism=retrieval_workers,
             )
         else:
             _emit_progress(progress, "searching chunks...")
@@ -1454,6 +1532,7 @@ def retrieve(
                 collection=collection,
                 limit=chunk_limit,
                 model=embedding_model,
+                max_parallelism=retrieval_workers,
             )
             _emit_progress(progress, "hydrating work-level evidence...")
             works = _hydrate_works_from_chunks(conn, chunks=chunks, limit=limit_value)
@@ -1461,6 +1540,7 @@ def retrieve(
     return {
         "query": query,
         "collection": collection,
+        "max_parallelism": retrieval_workers,
         "requested_target": requested_target,
         "routing": {
             "target": actual_target,
@@ -1481,6 +1561,7 @@ def ask(
     limit: int | None = None,
     target: str | None = None,
     collection_name: str | None = None,
+    max_parallelism: int | None = None,
     model: str | None = None,
     progress: ProgressCallback = None,
 ) -> dict[str, Any]:
@@ -1495,6 +1576,7 @@ def ask(
         limit=limit,
         target=target,
         collection_name=collection_name,
+        max_parallelism=max_parallelism,
         model=model,
         progress=progress,
     )
@@ -1780,6 +1862,7 @@ def _supporting_chunks(
     model: str,
     work_ids: list[int],
     limit: int,
+    max_parallelism: int = 1,
 ) -> list[dict[str, Any]]:
     raw = search_chunks_hybrid(
         conn,
@@ -1787,6 +1870,7 @@ def _supporting_chunks(
         collection=collection,
         limit=max(limit * 3, 30),
         model=model,
+        max_parallelism=max_parallelism,
     )
     if not work_ids:
         return raw[:limit]
