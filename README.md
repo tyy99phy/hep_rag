@@ -145,7 +145,7 @@ FastAPI 服务默认提供：
 - `/jobs/ingest-online`、`/jobs/reparse-pdfs`：异步任务接口
 - `/jobs/{job_id}`、`/jobs/{job_id}/events`：任务状态与进度事件
 
-如果设置了 `api.auth_token`，除 `/`、`/ui`、`/docs`、`/openapi.json`、`/health`、`/auth/status` 之外的接口都需要带 token。内置 Web Console 支持直接输入 token；异步 job 元数据和事件会持久化到 workspace 里的 SQLite，因此服务重启后仍可查询历史任务。
+如果设置了 `api.auth_token`，除 `/`、`/ui`、`/docs`、`/openapi.json`、`/health`、`/auth/status` 之外的接口都需要带 token。内置 Web Console 支持直接输入 token；异步 job 元数据和事件会持久化到独立的 `workspace/db/hep_rag_api.db`，因此服务重启后仍可查询历史任务，同时避免和主业务库写事务争锁。
 
 ### Web UI 使用
 
@@ -276,20 +276,25 @@ hep_rag/
 
 ## 数据库
 
-SQLite 数据库（`workspace/db/hep_rag_v2.db`），WAL 模式，28 张表：
+主业务 SQLite 数据库是 `workspace/db/hep_rag_v2.db`，WAL 模式，26 张表：
 
 - **元数据**: works, work\_ids, authors, collaborations, venues, topics
 - **引文网络**: citations, collection\_works
 - **全文**: documents, document\_sections, blocks, formulas, assets, chunks
 - **图结构**: similarity\_edges, bibliographic\_coupling\_edges, co\_citation\_edges
 - **嵌入**: work\_embeddings, chunk\_embeddings
-- **运行记录**: collections, ingest\_runs, graph\_build\_runs, api\_jobs, api\_job\_events
+- **运行记录**: collections, ingest\_runs, graph\_build\_runs
+
+API 服务的异步任务状态和事件单独存放在 `workspace/db/hep_rag_api.db`：
+
+- **API 任务**: api\_jobs, api\_job\_events
 
 ## 工作区目录
 
 ```
 workspace/
-├── db/hep_rag_v2.db       # 主数据库
+├── db/hep_rag_v2.db       # 主业务数据库
+├── db/hep_rag_api.db      # FastAPI job / event 数据库
 ├── collections/            # collection 配置 JSON
 ├── data/
 │   ├── raw/inspire/        # InspireHEP 原始响应

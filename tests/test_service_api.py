@@ -68,6 +68,11 @@ class ApiLayerTests(unittest.TestCase):
                     self.assertIn("hep-rag Console", response.text)
                     self.assertIn("/workspace/status", response.text)
                     self.assertIn("/auth/status", response.text)
+                    health = client.get("/health").json()
+                    self.assertEqual(
+                        Path(health["api_db_path"]),
+                        tmp / "workspace" / "db" / "hep_rag_api.db",
+                    )
         finally:
             paths.set_workspace_root(original_root)
 
@@ -124,6 +129,7 @@ class ApiLayerTests(unittest.TestCase):
                     payload = _wait_for_job(client, job_id)
                     self.assertEqual(payload["status"], "succeeded")
                     self.assertEqual(payload["result"]["query"], "CMS VBS SSWW")
+                    self.assertTrue((tmp / "workspace" / "db" / "hep_rag_api.db").exists())
 
                     events = client.get(f"/jobs/{job_id}/events").json()["events"]
                     self.assertTrue(any("searching INSPIRE" in item["message"] for item in events))
@@ -149,6 +155,10 @@ class ApiLayerTests(unittest.TestCase):
                     auth_status = client.get("/auth/status")
                     self.assertEqual(auth_status.status_code, 200)
                     self.assertTrue(auth_status.json()["auth_enabled"])
+                    self.assertEqual(
+                        Path(auth_status.json()["api_db_path"]),
+                        tmp / "workspace" / "db" / "hep_rag_api.db",
+                    )
 
                     unauthorized = client.post("/retrieve", json={"query": "q"})
                     self.assertEqual(unauthorized.status_code, 401)
@@ -182,6 +192,7 @@ class ApiLayerTests(unittest.TestCase):
                     job_id = response.json()["job_id"]
                     payload = _wait_for_job(client, job_id)
                     self.assertEqual(payload["status"], "succeeded")
+                    self.assertTrue((tmp / "workspace" / "db" / "hep_rag_api.db").exists())
 
                 reopened = create_app(config_loader=loader)
                 with TestClient(reopened) as client:

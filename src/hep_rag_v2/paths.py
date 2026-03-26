@@ -16,6 +16,7 @@ class WorkspacePaths:
     workdir: Path
     db_dir: Path
     db_path: Path
+    api_db_path: Path
     collections_dir: Path
     data_dir: Path
     raw_dir: Path
@@ -33,6 +34,7 @@ class WorkspacePaths:
             workdir=root,
             db_dir=root / "db",
             db_path=root / "db" / "hep_rag_v2.db",
+            api_db_path=root / "db" / "hep_rag_api.db",
             collections_dir=root / "collections",
             data_dir=data_dir,
             raw_dir=raw_dir,
@@ -47,6 +49,7 @@ class WorkspacePaths:
 WORKDIR: Path
 DB_DIR: Path
 DB_PATH: Path
+API_DB_PATH: Path
 COLLECTIONS_DIR: Path
 DATA_DIR: Path
 RAW_DIR: Path
@@ -72,6 +75,7 @@ def _refresh() -> None:
     global WORKDIR
     global DB_DIR
     global DB_PATH
+    global API_DB_PATH
     global COLLECTIONS_DIR
     global DATA_DIR
     global RAW_DIR
@@ -85,6 +89,7 @@ def _refresh() -> None:
     WORKDIR = wp.workdir
     DB_DIR = wp.db_dir
     DB_PATH = wp.db_path
+    API_DB_PATH = wp.api_db_path
     COLLECTIONS_DIR = wp.collections_dir
     DATA_DIR = wp.data_dir
     RAW_DIR = wp.raw_dir

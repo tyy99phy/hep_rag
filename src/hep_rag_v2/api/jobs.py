@@ -3,18 +3,50 @@ from __future__ import annotations
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Callable
 from uuid import uuid4
 
 from hep_rag_v2 import paths
-from hep_rag_v2.db import connect, ensure_db
 
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+API_JOB_SCHEMA = """
+PRAGMA journal_mode=WAL;
+
+CREATE TABLE IF NOT EXISTS api_jobs (
+  job_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  request_json TEXT,
+  result_json TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS api_job_events (
+  job_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  level TEXT NOT NULL,
+  message TEXT NOT NULL,
+  payload_json TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (job_id, seq),
+  FOREIGN KEY (job_id) REFERENCES api_jobs(job_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_jobs_status ON api_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_api_job_events_job ON api_job_events(job_id, seq);
+"""
 
 
 class BackgroundJobManager:
@@ -24,7 +56,7 @@ class BackgroundJobManager:
         self._lock = Lock()
         self._pending_events: dict[str, list[dict[str, Any]]] = {}
         self._next_seq: dict[str, int] = {}
-        ensure_db()
+        ensure_api_job_db()
 
     def submit(
         self,
@@ -38,7 +70,7 @@ class BackgroundJobManager:
     ) -> dict[str, Any]:
         job_id = str(job_id or uuid4().hex)
         created_at = _utcnow()
-        with self._lock, connect() as conn:
+        with self._lock, _job_db_connect() as conn:
             conn.execute(
                 """
                 INSERT INTO api_jobs (
@@ -62,7 +94,7 @@ class BackgroundJobManager:
         return self.get(job_id)
 
     def list_jobs(self) -> list[dict[str, Any]]:
-        with connect() as conn:
+        with _job_db_connect() as conn:
             rows = conn.execute(
                 """
                 SELECT
@@ -78,7 +110,7 @@ class BackgroundJobManager:
             return [self._overlay_pending_locked(snapshot) for snapshot in snapshots]
 
     def get(self, job_id: str) -> dict[str, Any]:
-        with connect() as conn:
+        with _job_db_connect() as conn:
             row = conn.execute(
                 """
                 SELECT
@@ -97,7 +129,7 @@ class BackgroundJobManager:
             return self._overlay_pending_locked(snapshot)
 
     def events(self, job_id: str, *, after: int = 0) -> list[dict[str, Any]]:
-        with connect() as conn:
+        with _job_db_connect() as conn:
             exists = conn.execute("SELECT 1 FROM api_jobs WHERE job_id = ?", (job_id,)).fetchone()
             if exists is None:
                 raise KeyError(job_id)
@@ -172,7 +204,7 @@ class BackgroundJobManager:
 
     def _run_job(self, job_id: str, fn: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
         started_at = _utcnow()
-        with self._lock, connect() as conn:
+        with self._lock, _job_db_connect() as conn:
             conn.execute(
                 """
                 UPDATE api_jobs
@@ -186,7 +218,7 @@ class BackgroundJobManager:
             result = fn(*args, **kwargs)
         except Exception as exc:
             finished_at = _utcnow()
-            with self._lock, connect() as conn:
+            with self._lock, _job_db_connect() as conn:
                 conn.execute(
                     """
                     UPDATE api_jobs
@@ -202,7 +234,7 @@ class BackgroundJobManager:
             return
 
         finished_at = _utcnow()
-        with self._lock, connect() as conn:
+        with self._lock, _job_db_connect() as conn:
             conn.execute(
                 """
                 UPDATE api_jobs
@@ -257,7 +289,7 @@ class BackgroundJobManager:
     def _reserve_seq_locked(self, job_id: str) -> int:
         next_seq = self._next_seq.get(job_id)
         if next_seq is None:
-            with connect() as conn:
+            with _job_db_connect() as conn:
                 row = conn.execute(
                     "SELECT COALESCE(MAX(seq), 0) AS max_seq FROM api_job_events WHERE job_id = ?",
                     (job_id,),
@@ -271,7 +303,7 @@ class BackgroundJobManager:
         if not pending:
             return
         try:
-            with _job_event_connect() as conn:
+            with _job_db_connect(timeout_sec=0.05) as conn:
                 for item in pending:
                     conn.execute(
                         """
@@ -301,9 +333,17 @@ class BackgroundJobManager:
         self._pending_events[job_id] = []
 
 
+def ensure_api_job_db() -> None:
+    paths.DB_DIR.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(paths.API_DB_PATH)) as conn:
+        conn.executescript(API_JOB_SCHEMA)
+        conn.commit()
+
+
 @contextmanager
-def _job_event_connect(timeout_sec: float = 0.05):
-    conn = sqlite3.connect(paths.DB_PATH, timeout=float(timeout_sec))
+def _job_db_connect(timeout_sec: float = 30.0):
+    ensure_api_job_db()
+    conn = sqlite3.connect(paths.API_DB_PATH, timeout=float(timeout_sec))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute(f"PRAGMA busy_timeout = {max(1, int(float(timeout_sec) * 1000))}")

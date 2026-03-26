@@ -39,31 +39,6 @@ CREATE TABLE IF NOT EXISTS graph_build_runs (
   finished_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS api_jobs (
-  job_id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,
-  status TEXT NOT NULL,
-  request_json TEXT,
-  result_json TEXT,
-  error TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  started_at TEXT,
-  finished_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS api_job_events (
-  job_id TEXT NOT NULL,
-  seq INTEGER NOT NULL,
-  event_type TEXT NOT NULL,
-  level TEXT NOT NULL,
-  message TEXT NOT NULL,
-  payload_json TEXT,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (job_id, seq),
-  FOREIGN KEY (job_id) REFERENCES api_jobs(job_id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS works (
   work_id INTEGER PRIMARY KEY AUTOINCREMENT,
   canonical_source TEXT NOT NULL,
@@ -380,8 +355,6 @@ CREATE INDEX IF NOT EXISTS idx_collection_works_work ON collection_works(work_id
 CREATE INDEX IF NOT EXISTS idx_citations_src ON citations(src_work_id);
 CREATE INDEX IF NOT EXISTS idx_citations_dst_external ON citations(dst_source, dst_external_id);
 CREATE INDEX IF NOT EXISTS idx_citations_dst_work ON citations(dst_work_id);
-CREATE INDEX IF NOT EXISTS idx_api_jobs_status ON api_jobs(status);
-CREATE INDEX IF NOT EXISTS idx_api_job_events_job ON api_job_events(job_id, seq);
 CREATE INDEX IF NOT EXISTS idx_documents_work ON documents(work_id);
 CREATE INDEX IF NOT EXISTS idx_sections_document ON document_sections(document_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_document ON blocks(document_id);

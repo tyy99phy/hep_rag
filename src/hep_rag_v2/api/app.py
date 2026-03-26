@@ -150,6 +150,7 @@ def create_app(
             "ui_enabled": bool((config.get("api") or {}).get("enable_ui", True)),
             "config_path": str(runtime_path),
             "workspace_root": request.app.state.workspace_root,
+            "api_db_path": str(paths.API_DB_PATH),
         }
 
     @app.get("/health")
@@ -159,6 +160,7 @@ def create_app(
             "ok": True,
             "config_path": str(runtime_path),
             "workspace_root": request.app.state.workspace_root,
+            "api_db_path": str(paths.API_DB_PATH),
             "auth_enabled": bool(request.app.state.api_auth_token),
             "ui_enabled": bool((config.get("api") or {}).get("enable_ui", True)),
         }
