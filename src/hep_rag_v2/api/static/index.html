@@ -262,7 +262,136 @@
       min-height: 420px;
       max-height: 760px;
       overflow: auto;
+    }
+
+    .result-frame.raw {
       font: 12px/1.6 "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+    }
+
+    .result-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .view-toggle {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .toggle-btn.active {
+      background: var(--accent);
+      color: white;
+      border-color: transparent;
+      box-shadow: 0 10px 24px rgba(31, 107, 72, 0.22);
+    }
+
+    .result-html {
+      display: grid;
+      gap: 12px;
+      font: 14px/1.6 "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+    }
+
+    .result-section {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      background: rgba(255,255,255,0.56);
+    }
+
+    .result-section h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
+    }
+
+    .result-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .result-badge {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 11px;
+      background: rgba(255,255,255,0.7);
+      color: var(--muted);
+    }
+
+    .result-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .result-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      background: rgba(255,255,255,0.78);
+    }
+
+    .result-card-title {
+      margin: 0 0 6px;
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .result-card-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    .result-card-copy {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .result-kv {
+      display: grid;
+      gap: 6px;
+    }
+
+    .result-row {
+      display: grid;
+      grid-template-columns: 140px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      font-size: 13px;
+    }
+
+    .result-key {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 11px;
+    }
+
+    .result-note {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .result-answer {
+      white-space: pre-wrap;
+      font-size: 14px;
+    }
+
+    .result-snippet {
+      white-space: pre-wrap;
+      font-size: 13px;
+      color: var(--ink);
+    }
+
+    .hidden {
+      display: none;
     }
 
     .links {
@@ -371,6 +500,7 @@
           <button id="ask-btn">Ask</button>
           <button id="ingest-btn" class="alt">Start Ingest Job</button>
           <button id="refresh-status-btn" class="ghost">Refresh Workspace</button>
+          <button id="clear-log-btn" class="ghost">Clear Log</button>
         </div>
         <div id="status-strip" class="status-strip">Ready.</div>
         <div class="log"><pre id="job-log">No active job.</pre></div>
@@ -378,33 +508,50 @@
 
       <div class="panel">
         <h2>Result</h2>
-        <p class="panel-copy">所有接口都以结构化 JSON 回显，方便你直接观察真实 API 行为。</p>
-        <div class="result-frame"><pre id="result">Loading workspace status...</pre></div>
+        <p class="panel-copy">Display 模式面向直接阅读，Raw 模式保留完整 JSON，便于调试真实 API 行为。</p>
+        <div class="result-toolbar">
+          <div class="view-toggle">
+            <button id="result-display-btn" class="ghost toggle-btn active">Display</button>
+            <button id="result-raw-btn" class="ghost toggle-btn">Raw</button>
+          </div>
+        </div>
+        <div id="result-frame" class="result-frame">
+          <div id="result-display" class="result-html">Loading workspace status...</div>
+          <pre id="result-raw" class="hidden">Loading workspace status...</pre>
+        </div>
       </div>
     </section>
   </div>
 
   <script>
     const TOKEN_STORAGE_KEY = "hep-rag-api-token";
+    const RESULT_MODE_STORAGE_KEY = "hep-rag-result-mode";
     const state = {
       currentJobId: null,
       pollTimer: null,
       lastEventSeq: 0,
       authEnabled: false,
+      resultMode: window.localStorage.getItem(RESULT_MODE_STORAGE_KEY) || "display",
+      resultData: "Loading workspace status...",
     };
 
-    const resultEl = document.getElementById("result");
+    const resultFrameEl = document.getElementById("result-frame");
+    const resultDisplayEl = document.getElementById("result-display");
+    const resultRawEl = document.getElementById("result-raw");
     const logEl = document.getElementById("job-log");
     const statusEl = document.getElementById("status-strip");
     const authStatusEl = document.getElementById("auth-strip");
     const tokenInputEl = document.getElementById("api-token");
+    const resultDisplayBtnEl = document.getElementById("result-display-btn");
+    const resultRawBtnEl = document.getElementById("result-raw-btn");
 
     function setStatus(text) {
       statusEl.textContent = text;
     }
 
     function setResult(data) {
-      resultEl.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+      state.resultData = data;
+      renderResult();
     }
 
     function appendLog(line) {
@@ -414,7 +561,291 @@
     }
 
     function resetLog() {
-      logEl.textContent = "";
+      logEl.textContent = "No active job.";
+    }
+
+    function setResultMode(mode) {
+      state.resultMode = mode === "raw" ? "raw" : "display";
+      window.localStorage.setItem(RESULT_MODE_STORAGE_KEY, state.resultMode);
+      renderResult();
+    }
+
+    function renderResult() {
+      const mode = state.resultMode;
+      resultDisplayBtnEl.classList.toggle("active", mode === "display");
+      resultRawBtnEl.classList.toggle("active", mode === "raw");
+      resultDisplayEl.classList.toggle("hidden", mode !== "display");
+      resultRawEl.classList.toggle("hidden", mode !== "raw");
+      resultFrameEl.classList.toggle("raw", mode === "raw");
+      if (mode === "raw") {
+        resultRawEl.textContent = typeof state.resultData === "string"
+          ? state.resultData
+          : JSON.stringify(state.resultData, null, 2);
+        return;
+      }
+      resultDisplayEl.innerHTML = renderDisplayResult(state.resultData);
+    }
+
+    function renderDisplayResult(data) {
+      if (typeof data === "string") {
+        return `<div class="result-note">${escapeHtml(data)}</div>`;
+      }
+      if (Array.isArray(data)) {
+        return renderGenericList(data);
+      }
+      if (!data || typeof data !== "object") {
+        return `<div class="result-note">${escapeHtml(String(data))}</div>`;
+      }
+      if (data.snapshot && Array.isArray(data.collections)) {
+        return renderWorkspaceResult(data);
+      }
+      if (Array.isArray(data.results) && Object.prototype.hasOwnProperty.call(data, "effective_count")) {
+        return renderFetchResult(data);
+      }
+      if (Array.isArray(data.works) && Array.isArray(data.evidence_chunks)) {
+        return renderRetrieveResult(data);
+      }
+      if (typeof data.answer === "string" && data.evidence) {
+        return renderAskResult(data);
+      }
+      if (data.job_id && data.kind && data.status) {
+        return renderJobResult(data);
+      }
+      if (Object.prototype.hasOwnProperty.call(data, "ok") || Object.prototype.hasOwnProperty.call(data, "auth_enabled")) {
+        return renderGenericObject(data);
+      }
+      return renderGenericObject(data);
+    }
+
+    function renderWorkspaceResult(data) {
+      const snapshot = data.snapshot || {};
+      const collections = Array.isArray(data.collections) ? data.collections : [];
+      return [
+        `<div class="result-section">`,
+        `<h3>Workspace Snapshot</h3>`,
+        `<div class="result-meta">`,
+        badge(`Works ${snapshot.works ?? 0}`),
+        badge(`Documents ${snapshot.documents ?? 0}`),
+        badge(`Chunks ${snapshot.chunks ?? 0}`),
+        badge(`Collections ${snapshot.collections ?? 0}`),
+        `</div>`,
+        `<div class="result-kv">`,
+        resultRow("Authors", snapshot.authors ?? 0),
+        resultRow("Venues", snapshot.venues ?? 0),
+        resultRow("Topics", snapshot.topics ?? 0),
+        resultRow("Citations", snapshot.citations ?? 0),
+        `</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Collections</h3>`,
+        collections.length
+          ? `<div class="result-list">${collections.map((item) => `
+              <div class="result-card">
+                <div class="result-card-title">${escapeHtml(item.collection || "unknown")}</div>
+                <div class="result-card-meta">${badge(`Works ${item.works ?? 0}`)}</div>
+              </div>
+            `).join("")}</div>`
+          : `<div class="result-note">No collections have been created yet.</div>`,
+        `</div>`,
+      ].join("");
+    }
+
+    function renderFetchResult(data) {
+      const results = Array.isArray(data.results) ? data.results : [];
+      return [
+        `<div class="result-section">`,
+        `<h3>Fetch Papers</h3>`,
+        `<div class="result-meta">`,
+        badge(`Query ${escapeHtml(data.query || "")}`),
+        badge(`Results ${results.length}`),
+        `</div>`,
+        results.length
+          ? `<div class="result-list">${results.map(renderPaperCard).join("")}</div>`
+          : `<div class="result-note">No paper candidates returned.</div>`,
+        `</div>`,
+      ].join("");
+    }
+
+    function renderRetrieveResult(data) {
+      const works = Array.isArray(data.works) ? data.works : [];
+      const chunks = Array.isArray(data.evidence_chunks) ? data.evidence_chunks : [];
+      const routing = data.routing || {};
+      const routedTo = routing.target || data.requested_target || "auto";
+      return [
+        `<div class="result-section">`,
+        `<h3>Retrieve</h3>`,
+        `<div class="result-meta">`,
+        badge(`Requested ${escapeHtml(data.requested_target || "auto")}`),
+        badge(`Routed ${escapeHtml(routedTo)}`),
+        badge(`Works ${works.length}`),
+        badge(`Chunks ${chunks.length}`),
+        `</div>`,
+        `<div class="result-note">Retrieve always returns both work-level evidence and chunk-level evidence. If you want chunk-first retrieval, set Target to <code>chunks</code>.</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Works</h3>`,
+        works.length
+          ? `<div class="result-list">${works.map(renderWorkCard).join("")}</div>`
+          : `<div class="result-note">No work-level matches returned.</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Chunks</h3>`,
+        chunks.length
+          ? `<div class="result-list">${chunks.map(renderChunkCard).join("")}</div>`
+          : `<div class="result-note">No chunk evidence returned. This usually means the collection has no parsed chunks yet, or the query did not match any chunk strongly enough.</div>`,
+        `</div>`,
+      ].join("");
+    }
+
+    function renderAskResult(data) {
+      const works = Array.isArray(data.evidence?.works) ? data.evidence.works : [];
+      const chunks = Array.isArray(data.evidence?.chunks) ? data.evidence.chunks : [];
+      return [
+        `<div class="result-section">`,
+        `<h3>Answer</h3>`,
+        `<div class="result-meta">`,
+        badge(`Mode ${escapeHtml(data.mode || "answer")}`),
+        badge(`Model ${escapeHtml(data.llm_model || data.llm_backend || "unknown")}`),
+        `</div>`,
+        `<div class="result-answer">${escapeHtml(data.answer || "")}</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Evidence Works</h3>`,
+        works.length
+          ? `<div class="result-list">${works.map(renderWorkCard).join("")}</div>`
+          : `<div class="result-note">No work-level evidence attached.</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Evidence Chunks</h3>`,
+        chunks.length
+          ? `<div class="result-list">${chunks.map(renderChunkCard).join("")}</div>`
+          : `<div class="result-note">No chunk-level evidence attached.</div>`,
+        `</div>`,
+      ].join("");
+    }
+
+    function renderJobResult(data) {
+      const result = data.result || {};
+      return [
+        `<div class="result-section">`,
+        `<h3>Job</h3>`,
+        `<div class="result-meta">`,
+        badge(`Kind ${escapeHtml(data.kind || "job")}`),
+        badge(`Status ${escapeHtml(data.status || "unknown")}`),
+        badge(`Events ${data.event_count ?? 0}`),
+        `</div>`,
+        `<div class="result-kv">`,
+        resultRow("Job ID", data.job_id || ""),
+        resultRow("Created", data.created_at || ""),
+        resultRow("Updated", data.updated_at || ""),
+        resultRow("Error", data.error || "none"),
+        `</div>`,
+        `</div>`,
+        Object.keys(result).length
+          ? `<div class="result-section"><h3>Job Result</h3>${renderGenericObject(result)}</div>`
+          : "",
+      ].join("");
+    }
+
+    function renderPaperCard(item) {
+      const ids = item.identifiers || {};
+      const idParts = Object.entries(ids)
+        .filter(([, value]) => value)
+        .map(([key, value]) => badge(`${escapeHtml(key)}:${escapeHtml(String(value))}`))
+        .join("");
+      return `
+        <div class="result-card">
+          <div class="result-card-title">${escapeHtml(item.title || "Untitled paper")}</div>
+          <div class="result-card-meta">
+            ${badge(`Year ${item.year ?? "?"}`)}
+            ${badge(`PDF candidates ${item.pdf_candidate_count ?? 0}`)}
+            ${idParts}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderWorkCard(item) {
+      return `
+        <div class="result-card">
+          <div class="result-card-title">${escapeHtml(item.raw_title || item.title || "Untitled work")}</div>
+          <div class="result-card-meta">
+            ${badge(`Rank ${item.rank ?? "-"}`)}
+            ${badge(`Score ${formatScore(item.hybrid_score)}`)}
+            ${badge(`Year ${item.year ?? "?"}`)}
+            ${badge(`${escapeHtml(item.canonical_source || "id")}:${escapeHtml(String(item.canonical_id || item.work_id || ""))}`)}
+          </div>
+          <div class="result-card-copy">${escapeHtml(truncateText(item.abstract || "", 280) || "No abstract available.")}</div>
+        </div>
+      `;
+    }
+
+    function renderChunkCard(item) {
+      return `
+        <div class="result-card">
+          <div class="result-card-title">${escapeHtml(item.raw_title || `Chunk ${item.chunk_id || ""}`)}</div>
+          <div class="result-card-meta">
+            ${badge(`Rank ${item.rank ?? "-"}`)}
+            ${badge(`Score ${formatScore(item.hybrid_score)}`)}
+            ${badge(`Section ${escapeHtml(item.section_hint || "unknown")}`)}
+            ${badge(`Role ${escapeHtml(item.chunk_role || "chunk")}`)}
+            ${badge(`Chunk ${escapeHtml(String(item.chunk_id || ""))}`)}
+          </div>
+          <div class="result-snippet">${escapeHtml(truncateText(item.clean_text || item.text || "", 420) || "No chunk text available.")}</div>
+        </div>
+      `;
+    }
+
+    function renderGenericObject(data) {
+      const rows = Object.entries(data || {}).map(([key, value]) => {
+        const text = typeof value === "string"
+          ? value
+          : JSON.stringify(value, null, 2);
+        return resultRow(key, truncateText(text, 400));
+      }).join("");
+      return `<div class="result-kv">${rows || `<div class="result-note">No fields.</div>`}</div>`;
+    }
+
+    function renderGenericList(items) {
+      return `<div class="result-list">${items.map((item, index) => `
+        <div class="result-card">
+          <div class="result-card-title">Item ${index + 1}</div>
+          ${renderGenericObject(item)}
+        </div>
+      `).join("")}</div>`;
+    }
+
+    function resultRow(key, value) {
+      return `
+        <div class="result-row">
+          <div class="result-key">${escapeHtml(String(key))}</div>
+          <div>${escapeHtml(String(value ?? ""))}</div>
+        </div>
+      `;
+    }
+
+    function badge(text) {
+      return `<span class="result-badge">${text}</span>`;
+    }
+
+    function formatScore(value) {
+      const num = Number(value);
+      return Number.isFinite(num) ? num.toFixed(3) : "-";
+    }
+
+    function truncateText(text, limit = 240) {
+      const normalized = String(text || "").replace(/\s+/g, " ").trim();
+      if (!normalized) return "";
+      return normalized.length > limit ? normalized.slice(0, limit - 1).trimEnd() + "…" : normalized;
+    }
+
+    function escapeHtml(text) {
+      return String(text || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#39;");
     }
 
     function readToken() {
@@ -603,6 +1034,9 @@
     document.getElementById("ask-btn").addEventListener("click", askQuestion);
     document.getElementById("ingest-btn").addEventListener("click", startIngestJob);
     document.getElementById("refresh-status-btn").addEventListener("click", refreshWorkspace);
+    document.getElementById("clear-log-btn").addEventListener("click", resetLog);
+    resultDisplayBtnEl.addEventListener("click", () => setResultMode("display"));
+    resultRawBtnEl.addEventListener("click", () => setResultMode("raw"));
     tokenInputEl.value = window.localStorage.getItem(TOKEN_STORAGE_KEY) || "";
     tokenInputEl.addEventListener("input", () => {
       window.localStorage.setItem(TOKEN_STORAGE_KEY, readToken());
@@ -614,6 +1048,7 @@
     });
 
     (async () => {
+      renderResult();
       await refreshAuthStatus();
       if (!state.authEnabled || readToken()) {
         await refreshWorkspace();
