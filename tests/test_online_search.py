@@ -7,14 +7,30 @@ from hep_rag_v2.config import default_config
 from hep_rag_v2.pipeline import _search_online_hits
 
 
-def _hit(control_number: int, title: str, *, doc_types: list[str] | None = None) -> dict:
-    return {
-        "metadata": {
-            "control_number": control_number,
-            "titles": [{"title": title}],
-            "document_type": list(doc_types or []),
-        }
+def _hit(
+    control_number: int,
+    title: str,
+    *,
+    doc_types: list[str] | None = None,
+    year: int | None = None,
+    collaborations: list[str] | None = None,
+    arxiv_id: str | None = None,
+    doi: str | None = None,
+) -> dict:
+    metadata = {
+        "control_number": control_number,
+        "titles": [{"title": title}],
+        "document_type": list(doc_types or []),
     }
+    if year is not None:
+        metadata["earliest_date"] = f"{year}-01-01"
+    if collaborations:
+        metadata["collaborations"] = [{"value": value} for value in collaborations]
+    if arxiv_id:
+        metadata["arxiv_eprints"] = [{"value": arxiv_id}]
+    if doi:
+        metadata["dois"] = [{"value": doi}]
+    return {"metadata": metadata}
 
 
 class _FakeClient:
@@ -55,15 +71,15 @@ class OnlineSearchTests(unittest.TestCase):
                 _hit(1847777, "Vector-Boson scattering at the LHC: Unraveling the electroweak sector", doc_types=["review"]),
             ],
             seed_query: [
-                _hit(1789135, "Measurements of production cross sections of WZ and same-sign WW boson pairs in association with two jets in proton-proton collisions at 13 TeV", doc_types=["note"]),
-                _hit(1794169, "Measurements of production cross sections of WZ and same-sign WW boson pairs in association with two jets in proton-proton collisions at 13 TeV", doc_types=["article"]),
+                _hit(1789135, "Measurements of production cross sections of WZ and same-sign WW boson pairs in association with two jets in proton-proton collisions at 13 TeV", doc_types=["note"], year=2020, collaborations=["CMS"]),
+                _hit(1794169, "Measurements of production cross sections of WZ and same-sign WW boson pairs in association with two jets in proton-proton collisions at 13 TeV", doc_types=["article"], year=2020, collaborations=["CMS"], arxiv_id="2005.01173", doi="10.1016/j.physletb.2020.135710"),
             ],
             "CMS same-sign WW WZ jets 13 TeV": [
-                _hit(1794169, "Measurements of production cross sections of WZ and same-sign WW boson pairs in association with two jets in proton-proton collisions at 13 TeV", doc_types=["article"]),
+                _hit(1794169, "Measurements of production cross sections of WZ and same-sign WW boson pairs in association with two jets in proton-proton collisions at 13 TeV", doc_types=["article"], year=2020, collaborations=["CMS"], arxiv_id="2005.01173", doi="10.1016/j.physletb.2020.135710"),
                 _hit(2758816, "Measurement of same sign WW VBS processes at CMS with one hadronic tau in the final state", doc_types=["article"]),
             ],
             'collaboration CMS and (title:"same-sign" or abstract:"same sign") and (title:WZ or abstract:WZ) and (title:jets or abstract:jets)': [
-                _hit(1794169, "Measurements of production cross sections of WZ and same-sign WW boson pairs in association with two jets in proton-proton collisions at 13 TeV", doc_types=["article"]),
+                _hit(1794169, "Measurements of production cross sections of WZ and same-sign WW boson pairs in association with two jets in proton-proton collisions at 13 TeV", doc_types=["article"], year=2020, collaborations=["CMS"], arxiv_id="2005.01173", doi="10.1016/j.physletb.2020.135710"),
                 _hit(1624170, "Observation of electroweak production of same-sign W boson pairs in the two jet and two same-sign lepton final state in proton-proton collisions at 13 TeV", doc_types=["article"]),
             ],
         }
@@ -90,6 +106,7 @@ class OnlineSearchTests(unittest.TestCase):
         hit_ids = [hit["metadata"]["control_number"] for hit in hits]
         self.assertEqual(hit_ids[0], 1794169)
         self.assertIn(2758816, hit_ids)
+        self.assertNotIn(1789135, hit_ids)
 
     def test_search_online_hits_uses_hep_seed_query_without_llm(self) -> None:
         config = default_config()
@@ -111,8 +128,8 @@ class OnlineSearchTests(unittest.TestCase):
             side_effect=lambda query, **_: {
                 "CMS VBS SSWW": [_hit(1847777, "Vector-Boson scattering at the LHC: Unraveling the electroweak sector", doc_types=["review"])],
                 seed_query: [
-                    _hit(1789135, "CMS note", doc_types=["note"]),
-                    _hit(1794169, "CMS article", doc_types=["article"]),
+                    _hit(1789135, "Measurements of production cross sections of same-sign WW and WZ boson pairs in association with two jets in proton-proton collisions at 13 TeV", doc_types=["note"], year=2020, collaborations=["CMS"]),
+                    _hit(1794169, "Measurements of production cross sections of WZ and same-sign WW boson pairs in association with two jets in proton-proton collisions at 13 TeV", doc_types=["article"], year=2020, collaborations=["CMS"], arxiv_id="2005.01173", doi="10.1016/j.physletb.2020.135710"),
                 ],
             }[query],
         ):
@@ -122,6 +139,40 @@ class OnlineSearchTests(unittest.TestCase):
         self.assertTrue(search_plan["seed_used"])
         self.assertEqual(search_plan["queries"], ["CMS VBS SSWW", seed_query])
         self.assertEqual(hits[0]["metadata"]["control_number"], 1794169)
+        self.assertEqual(search_plan["dedupe_removed"], 1)
+
+    def test_search_online_hits_dedupes_note_article_variants_before_limit(self) -> None:
+        config = default_config()
+        config["llm"]["enabled"] = False
+
+        with mock.patch(
+            "hep_rag_v2.pipeline.search_literature",
+            return_value=[
+                _hit(
+                    1808672,
+                    "Measurements of production cross sections of polarized same-sign W boson pairs in association with two jets in proton-proton collisions at 13 TeV",
+                    doc_types=["note"],
+                    year=2020,
+                    collaborations=["CMS"],
+                ),
+                _hit(
+                    1818160,
+                    "Measurements of production cross sections of polarized same-sign W boson pairs in association with two jets in proton-proton collisions at 13 TeV",
+                    doc_types=["article"],
+                    year=2020,
+                    collaborations=["CMS"],
+                    arxiv_id="2009.09429",
+                    doi="10.1016/j.physletb.2020.136018",
+                ),
+                _hit(1794169, "CMS article two", doc_types=["article"], year=2020, collaborations=["CMS"]),
+                _hit(1847777, "Vector-Boson scattering at the LHC: Unraveling the electroweak sector", doc_types=["review"], year=2021),
+            ],
+        ):
+            hits, search_plan = _search_online_hits(config, query="CMS same-sign WW", limit=3)
+
+        hit_ids = [hit["metadata"]["control_number"] for hit in hits]
+        self.assertEqual(hit_ids, [1818160, 1794169, 1847777])
+        self.assertEqual(search_plan["dedupe_removed"], 1)
 
     def test_search_online_hits_skips_query_rewrite_for_structured_queries(self) -> None:
         config = default_config()

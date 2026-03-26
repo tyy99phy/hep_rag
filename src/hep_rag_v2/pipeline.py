@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -13,7 +14,15 @@ from hep_rag_v2.config import runtime_collection_config
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.fulltext import import_mineru_source, materialize_mineru_document
 from hep_rag_v2.graph import rebuild_graph_edges
-from hep_rag_v2.metadata import canonical_identity, upsert_collection, upsert_work_from_hit
+from hep_rag_v2.metadata import (
+    canonical_identity,
+    first_arxiv_id,
+    first_doi,
+    first_title,
+    upsert_collection,
+    upsert_work_from_hit,
+    year_from_metadata,
+)
 from hep_rag_v2.providers.inspire import (
     content_addressed_name,
     download_pdf_candidates,
@@ -65,6 +74,26 @@ HEP_COLLABORATIONS = (
     "BABAR",
 )
 HEP_ENERGY_PATTERN = re.compile(r"\b(\d+(?:\.\d+)?)\s*TEV\b", re.IGNORECASE)
+TITLE_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+TITLE_TOKEN_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "via",
+    "with",
+}
 
 
 def _emit_progress(progress: ProgressCallback, message: str) -> None:
@@ -117,8 +146,9 @@ def _search_online_hits(
         )
         ranked_batches.append((search_query, hits))
 
-    merged_hits = _merge_ranked_hits(ranked_batches, limit=max(1, limit))
+    merged_hits, merge_stats = _merge_ranked_hits(ranked_batches, limit=max(1, limit))
     search_plan["published_only"] = published_only
+    search_plan.update(merge_stats)
     return (merged_hits, search_plan)
 
 
@@ -400,11 +430,13 @@ def _merge_ranked_hits(
     ranked_batches: list[tuple[str, list[dict[str, Any]]]],
     *,
     limit: int,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     if not ranked_batches:
-        return []
-    if len(ranked_batches) == 1:
-        return ranked_batches[0][1][:limit]
+        return [], {
+            "merged_hit_count": 0,
+            "deduped_hit_count": 0,
+            "dedupe_removed": 0,
+        }
 
     scores: dict[str, float] = {}
     first_seen: dict[str, tuple[int, int]] = {}
@@ -421,7 +453,13 @@ def _merge_ranked_hits(
         scores,
         key=lambda key: (-scores[key], first_seen[key][0], first_seen[key][1]),
     )
-    return [hit_map[key] for key in ordered[:limit]]
+    ordered_hits = [hit_map[key] for key in ordered]
+    deduped_hits = _dedupe_online_hits(ordered_hits)
+    return deduped_hits[:limit], {
+        "merged_hit_count": len(ordered_hits),
+        "deduped_hit_count": len(deduped_hits),
+        "dedupe_removed": max(0, len(ordered_hits) - len(deduped_hits)),
+    }
 
 
 def _online_hit_key(hit: dict[str, Any]) -> str:
@@ -460,6 +498,197 @@ def _document_type_score_bonus(hit: dict[str, Any]) -> float:
     if "conference paper" in doc_types or "proceedings article" in doc_types:
         return -0.001
     return 0.0
+
+
+def _dedupe_online_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    for hit in hits:
+        merged = False
+        for idx, existing in enumerate(deduped):
+            if not _hits_are_semantic_duplicates(existing, hit):
+                continue
+            deduped[idx] = _merge_duplicate_hits(existing, hit)
+            merged = True
+            break
+        if not merged:
+            deduped.append(hit)
+    return deduped
+
+
+def _hits_are_semantic_duplicates(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_md = left.get("metadata") or {}
+    right_md = right.get("metadata") or {}
+
+    left_arxiv = str(first_arxiv_id(left_md) or "").strip().casefold()
+    right_arxiv = str(first_arxiv_id(right_md) or "").strip().casefold()
+    if left_arxiv and right_arxiv and left_arxiv == right_arxiv:
+        return True
+
+    left_doi = str(first_doi(left_md) or "").strip().casefold()
+    right_doi = str(first_doi(right_md) or "").strip().casefold()
+    if left_doi and right_doi and left_doi == right_doi:
+        return True
+
+    left_collabs = _hit_collaborations(left_md)
+    right_collabs = _hit_collaborations(right_md)
+    if left_collabs and right_collabs and left_collabs.isdisjoint(right_collabs):
+        return False
+
+    left_year = year_from_metadata(left_md)
+    right_year = year_from_metadata(right_md)
+    if left_year is not None and right_year is not None and abs(left_year - right_year) > 1:
+        return False
+
+    return _titles_look_equivalent(first_title(left_md), first_title(right_md))
+
+
+def _merge_duplicate_hits(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    if _hit_richness_key(right) > _hit_richness_key(left):
+        primary, secondary = right, left
+    else:
+        primary, secondary = left, right
+
+    merged = copy.deepcopy(primary)
+    merged["metadata"] = _merge_hit_metadata(
+        primary.get("metadata") or {},
+        secondary.get("metadata") or {},
+    )
+    merged_links = dict(secondary.get("links") or {})
+    merged_links.update(primary.get("links") or {})
+    if merged_links:
+        merged["links"] = merged_links
+    return merged
+
+
+def _merge_hit_metadata(primary: dict[str, Any], secondary: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(primary)
+    for key, secondary_value in secondary.items():
+        primary_value = merged.get(key)
+        if isinstance(primary_value, list) or isinstance(secondary_value, list):
+            merged[key] = _merge_unique_lists(primary_value, secondary_value)
+            continue
+        if key == "citation_count":
+            merged[key] = max(_coerce_int_like(primary_value) or 0, _coerce_int_like(secondary_value) or 0) or None
+            continue
+        if not _has_value(primary_value) and _has_value(secondary_value):
+            merged[key] = copy.deepcopy(secondary_value)
+    return merged
+
+
+def _merge_unique_lists(primary: Any, secondary: Any) -> list[Any]:
+    merged: list[Any] = []
+    seen: set[str] = set()
+    for item in list(primary or []) + list(secondary or []):
+        fingerprint = _json_fingerprint(item)
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        merged.append(copy.deepcopy(item))
+    return merged
+
+
+def _json_fingerprint(value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    except TypeError:
+        return repr(value)
+
+
+def _hit_richness_key(hit: dict[str, Any]) -> tuple[int, int, int, int, int, int, int, int]:
+    metadata = hit.get("metadata") or {}
+    return (
+        _document_type_preference(metadata),
+        1 if list_pdf_candidates(hit) else 0,
+        1 if metadata.get("publication_info") else 0,
+        1 if first_arxiv_id(metadata) else 0,
+        1 if first_doi(metadata) else 0,
+        len(metadata.get("documents") or []),
+        _coerce_int_like(metadata.get("citation_count")) or 0,
+        len(first_title(metadata) or ""),
+    )
+
+
+def _document_type_preference(metadata: dict[str, Any]) -> int:
+    doc_types = {str(item).casefold() for item in (metadata.get("document_type") or [])}
+    if "article" in doc_types:
+        return 5
+    if "review" in doc_types:
+        return 4
+    if "note" in doc_types:
+        return 3
+    if "conference paper" in doc_types or "proceedings article" in doc_types:
+        return 2
+    return 1
+
+
+def _hit_collaborations(metadata: dict[str, Any]) -> set[str]:
+    collabs: set[str] = set()
+    for item in metadata.get("collaborations") or []:
+        if isinstance(item, dict) and item.get("value"):
+            collabs.add(str(item["value"]).strip().casefold())
+        elif item:
+            collabs.add(str(item).strip().casefold())
+    return collabs
+
+
+def _titles_look_equivalent(left: str | None, right: str | None) -> bool:
+    left_norm = _normalize_title_text(left)
+    right_norm = _normalize_title_text(right)
+    if not left_norm or not right_norm:
+        return False
+    if left_norm == right_norm:
+        return True
+
+    left_tokens = _title_token_set(left_norm)
+    right_tokens = _title_token_set(right_norm)
+    if not left_tokens or not right_tokens:
+        return False
+
+    shared = len(left_tokens & right_tokens)
+    if shared < 6:
+        return False
+    if left_tokens == right_tokens:
+        return True
+    return shared / float(len(left_tokens | right_tokens)) >= 0.92
+
+
+def _normalize_title_text(title: str | None) -> str:
+    value = str(title or "").casefold()
+    if not value:
+        return ""
+    value = value.replace("same-sign", "same sign")
+    value = value.replace("proton-proton", "proton proton")
+    value = value.replace("w±w±", "ww")
+    value = re.sub(r"\\[a-z]+", " ", value)
+    value = value.replace("±", " ")
+    value = re.sub(r"\$+", " ", value)
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return " ".join(value.split())
+
+
+def _title_token_set(normalized_title: str) -> set[str]:
+    return {
+        token
+        for token in TITLE_TOKEN_PATTERN.findall(str(normalized_title or ""))
+        if token and token not in TITLE_TOKEN_STOPWORDS
+    }
+
+
+def _has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (list, dict, str, tuple, set)):
+        return bool(value)
+    return True
+
+
+def _coerce_int_like(value: Any) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def initialize_workspace(config: dict[str, Any], *, collection_name: str | None = None) -> dict[str, Any]:

@@ -110,14 +110,14 @@ def list_pdf_candidates(
         if not isinstance(item, dict):
             continue
         url = str(item.get("url") or "").strip()
-        if _looks_like_pdf_url(url):
+        if _is_pdf_document_candidate(item, url):
             add(url, "documents")
 
     for item in metadata.get("files") or []:
         if not isinstance(item, dict):
             continue
         url = str(item.get("url") or item.get("file") or item.get("path") or "").strip()
-        if _looks_like_pdf_url(url):
+        if _is_pdf_file_candidate(item, url):
             add(url, "files")
 
     arxiv_id = first_arxiv_id(metadata)
@@ -283,6 +283,33 @@ def _http_get_json(
 def _looks_like_pdf_url(url: str) -> bool:
     value = str(url or "").casefold()
     return value.endswith(".pdf") or ".pdf?" in value or "/pdf/" in value or "arxiv.org/pdf/" in value
+
+
+def _looks_like_inspire_file_url(url: str) -> bool:
+    value = str(url or "").casefold()
+    return "inspirehep.net/files/" in value
+
+
+def _is_pdf_document_candidate(item: dict[str, Any], url: str) -> bool:
+    if _looks_like_pdf_url(url) or _looks_like_inspire_file_url(url):
+        return True
+    filename = str(item.get("filename") or "").casefold()
+    if filename.endswith(".pdf"):
+        return True
+    description = str(item.get("description") or "").casefold()
+    if "pdf" in description or "fulltext" in description:
+        return True
+    return bool(item.get("fulltext"))
+
+
+def _is_pdf_file_candidate(item: dict[str, Any], url: str) -> bool:
+    if _looks_like_pdf_url(url) or _looks_like_inspire_file_url(url):
+        return True
+    for key in ("filename", "file", "path"):
+        value = str(item.get(key) or "").casefold()
+        if value.endswith(".pdf"):
+            return True
+    return False
 
 
 def _looks_like_pdf_response(content_type: str | None, first_chunk: bytes) -> bool:
