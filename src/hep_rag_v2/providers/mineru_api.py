@@ -124,15 +124,18 @@ class MinerUClient:
         last_payload: dict[str, Any] | None = None
 
         while time.monotonic() <= deadline:
-            response = requests.get(url, headers=self._headers(), timeout=self.timeout_sec)
-            response.raise_for_status()
-            payload = response.json()
-            last_payload = payload
-            if _payload_code(payload) != 0:
-                raise RuntimeError(f"MinerU batch status failed: {payload}")
-            result = _extract_result(payload)
-            if result.state in {"done", "failed"}:
-                return result
+            try:
+                response = requests.get(url, headers=self._headers(), timeout=self.timeout_sec)
+                response.raise_for_status()
+                payload = response.json()
+                last_payload = payload
+                if _payload_code(payload) != 0:
+                    raise RuntimeError(f"MinerU batch status failed: {payload}")
+                result = _extract_result(payload)
+                if result.state in {"done", "failed"}:
+                    return result
+            except requests.RequestException as exc:
+                last_payload = {"request_error": str(exc)}
             time.sleep(self.poll_interval_sec)
 
         raise TimeoutError(f"MinerU batch polling timed out: batch_id={batch_id}, last_payload={last_payload}")
@@ -155,6 +158,16 @@ def _extract_result(payload: dict[str, Any]) -> MinerUTaskResult:
             data_id=str(result.get("data_id") or "").strip() or None,
             state=state or "unknown",
             full_zip_url=str(result.get("full_zip_url") or "").strip() or None,
+            raw_payload=payload,
+        )
+    if isinstance(result, list) and result:
+        first = result[0] if isinstance(result[0], dict) else {}
+        state = str(first.get("state") or "").strip()
+        return MinerUTaskResult(
+            batch_id=str(data.get("batch_id") or ""),
+            data_id=str(first.get("data_id") or "").strip() or None,
+            state=state or "unknown",
+            full_zip_url=str(first.get("full_zip_url") or "").strip() or None,
             raw_payload=payload,
         )
 

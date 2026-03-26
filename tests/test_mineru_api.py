@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import requests
+
 from hep_rag_v2.providers.mineru_api import MinerUClient
 
 
@@ -54,6 +56,68 @@ class MinerUApiTests(unittest.TestCase):
         self.assertEqual(result.batch_id, "batch-2")
         self.assertEqual(result.state, "done")
         self.assertEqual(result.full_zip_url, "https://example.com/result.zip")
+
+    def test_poll_batch_accepts_extract_result_list(self) -> None:
+        client = MinerUClient(
+            api_base="https://mineru.net/api/v4",
+            api_token="token",
+        )
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "batch_id": "batch-3",
+                "extract_result": [
+                    {
+                        "data_id": "paper",
+                        "state": "done",
+                        "full_zip_url": "https://example.com/list-result.zip",
+                    }
+                ],
+            },
+        }
+
+        with mock.patch("hep_rag_v2.providers.mineru_api.requests.get", return_value=response):
+            result = client._poll_batch(batch_id="batch-3")
+
+        self.assertEqual(result.batch_id, "batch-3")
+        self.assertEqual(result.state, "done")
+        self.assertEqual(result.full_zip_url, "https://example.com/list-result.zip")
+
+    def test_poll_batch_retries_after_request_exception(self) -> None:
+        client = MinerUClient(
+            api_base="https://mineru.net/api/v4",
+            api_token="token",
+            poll_interval_sec=1,
+            max_wait_sec=3,
+        )
+        ok_response = mock.Mock()
+        ok_response.raise_for_status.return_value = None
+        ok_response.json.return_value = {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "batch_id": "batch-4",
+                "state": "done",
+                "data_id": "paper",
+                "full_zip_url": "https://example.com/retry-result.zip",
+            },
+        }
+
+        with (
+            mock.patch(
+                "hep_rag_v2.providers.mineru_api.requests.get",
+                side_effect=[requests.ConnectionError("reset"), ok_response],
+            ),
+            mock.patch("hep_rag_v2.providers.mineru_api.time.sleep", return_value=None),
+        ):
+            result = client._poll_batch(batch_id="batch-4")
+
+        self.assertEqual(result.batch_id, "batch-4")
+        self.assertEqual(result.state, "done")
+        self.assertEqual(result.full_zip_url, "https://example.com/retry-result.zip")
 
 
 if __name__ == "__main__":
