@@ -20,7 +20,7 @@ from hep_rag_v2.metadata import (
     upsert_collection,
     upsert_work_from_hit,
 )
-from hep_rag_v2.pipeline import ask, fetch_online_candidates, ingest_online, retrieve
+from hep_rag_v2.pipeline import ask, fetch_online_candidates, ingest_online, reparse_cached_pdfs, retrieve
 from hep_rag_v2.search import rebuild_search_indices
 
 from ._common import (
@@ -87,6 +87,27 @@ def cmd_ingest_online(args: argparse.Namespace) -> None:
             progress=emit_cli_status,
         )
         emit_cli_status("online ingest finished.")
+    except Exception as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def cmd_reparse_pdfs(args: argparse.Namespace) -> None:
+    try:
+        emit_cli_status("loading config...")
+        _, config = apply_runtime_config(config_path=args.config, workspace_root=args.workspace)
+        emit_cli_status("scanning cached PDFs that still need MinerU...")
+        payload = reparse_cached_pdfs(
+            config,
+            collection_name=args.collection,
+            limit=args.limit,
+            work_ids=args.work_id,
+            replace_existing=args.replace_existing,
+            skip_index=args.skip_index,
+            skip_graph=args.skip_graph,
+            progress=emit_cli_status,
+        )
+        emit_cli_status("cached PDF reparse finished.")
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(payload, ensure_ascii=False, indent=2))

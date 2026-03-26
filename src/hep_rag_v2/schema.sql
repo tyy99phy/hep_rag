@@ -217,6 +217,8 @@ CREATE TABLE IF NOT EXISTS documents (
   parse_status TEXT NOT NULL DEFAULT 'registered',
   parsed_dir TEXT,
   manifest_path TEXT,
+  parse_error TEXT,
+  last_parse_attempt_at TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (work_id) REFERENCES works(work_id) ON DELETE CASCADE

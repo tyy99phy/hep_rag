@@ -34,6 +34,7 @@ from .ingest import (
     cmd_ingest_metadata,
     cmd_ingest_online,
     cmd_query,
+    cmd_reparse_pdfs,
     cmd_resolve_citations,
     cmd_search_works,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "cmd_search_works",
     "cmd_enrich_inspire_metadata",
     "cmd_import_mineru",
+    "cmd_reparse_pdfs",
     "cmd_bootstrap_legacy_corpus",
     # search / index
     "cmd_build_search_index",

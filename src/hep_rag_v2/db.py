@@ -79,6 +79,14 @@ def _ensure_schema_upgrades(conn: sqlite3.Connection) -> None:
             "flags_json": "TEXT",
         },
     )
+    _ensure_columns(
+        conn,
+        "documents",
+        {
+            "parse_error": "TEXT",
+            "last_parse_attempt_at": "TEXT",
+        },
+    )
 
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:

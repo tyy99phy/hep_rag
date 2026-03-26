@@ -33,7 +33,7 @@ from hep_rag_v2.providers.inspire import (
 from hep_rag_v2.providers.local_transformers import LocalTransformersClient
 from hep_rag_v2.providers.mineru_api import MinerUClient
 from hep_rag_v2.providers.openai_compatible import OpenAICompatibleClient
-from hep_rag_v2.records import paper_storage_stem, parsed_doc_dir
+from hep_rag_v2.records import infer_collection_name, paper_storage_stem, parsed_doc_dir
 from hep_rag_v2.search import rebuild_search_indices
 from hep_rag_v2.vector import (
     DEFAULT_VECTOR_MODEL,
@@ -523,15 +523,14 @@ def _hits_are_semantic_duplicates(left: dict[str, Any], right: dict[str, Any]) -
     right_arxiv = str(first_arxiv_id(right_md) or "").strip().casefold()
     if left_arxiv and right_arxiv and left_arxiv == right_arxiv:
         return True
+    if left_arxiv and right_arxiv and left_arxiv != right_arxiv:
+        return False
 
     left_doi = str(first_doi(left_md) or "").strip().casefold()
     right_doi = str(first_doi(right_md) or "").strip().casefold()
     if left_doi and right_doi and left_doi == right_doi:
         return True
-
-    left_collabs = _hit_collaborations(left_md)
-    right_collabs = _hit_collaborations(right_md)
-    if left_collabs and right_collabs and left_collabs.isdisjoint(right_collabs):
+    if left_doi and right_doi and left_doi != right_doi:
         return False
 
     left_year = year_from_metadata(left_md)
@@ -539,7 +538,9 @@ def _hits_are_semantic_duplicates(left: dict[str, Any], right: dict[str, Any]) -
     if left_year is not None and right_year is not None and abs(left_year - right_year) > 1:
         return False
 
-    return _titles_look_equivalent(first_title(left_md), first_title(right_md))
+    if not _titles_look_equivalent(first_title(left_md), first_title(right_md)):
+        return False
+    return _looks_like_stage_variant_duplicate(left_md, right_md)
 
 
 def _merge_duplicate_hits(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
@@ -631,6 +632,53 @@ def _hit_collaborations(metadata: dict[str, Any]) -> set[str]:
     return collabs
 
 
+def _looks_like_stage_variant_duplicate(left_md: dict[str, Any], right_md: dict[str, Any]) -> bool:
+    left_stage = _document_stage_rank(left_md)
+    right_stage = _document_stage_rank(right_md)
+
+    if left_stage == right_stage:
+        return False
+    if max(left_stage, right_stage) < 3:
+        return False
+
+    higher = left_md if left_stage > right_stage else right_md
+    lower = right_md if higher is left_md else left_md
+
+    if _has_distinct_publication_identities(left_md, right_md):
+        return False
+    if not _has_publication_signal(higher):
+        return False
+    if _has_publication_signal(lower) and _document_stage_rank(lower) >= 4:
+        return False
+    return True
+
+
+def _document_stage_rank(metadata: dict[str, Any]) -> int:
+    doc_types = {str(item).casefold() for item in (metadata.get("document_type") or [])}
+    if "article" in doc_types or "review" in doc_types:
+        return 5
+    if "note" in doc_types:
+        return 4
+    if "conference paper" in doc_types or "proceedings article" in doc_types:
+        return 3
+    if metadata.get("publication_info"):
+        return 2
+    return 1
+
+
+def _has_publication_signal(metadata: dict[str, Any]) -> bool:
+    return bool(metadata.get("publication_info") or first_arxiv_id(metadata) or first_doi(metadata) or metadata.get("documents"))
+
+
+def _has_distinct_publication_identities(left_md: dict[str, Any], right_md: dict[str, Any]) -> bool:
+    for extractor in (first_arxiv_id, first_doi):
+        left_value = str(extractor(left_md) or "").strip().casefold()
+        right_value = str(extractor(right_md) or "").strip().casefold()
+        if left_value and right_value and left_value != right_value:
+            return True
+    return False
+
+
 def _titles_look_equivalent(left: str | None, right: str | None) -> bool:
     left_norm = _normalize_title_text(left)
     right_norm = _normalize_title_text(right)
@@ -691,6 +739,82 @@ def _coerce_int_like(value: Any) -> int | None:
         return None
 
 
+def _annotate_hits_with_local_status(
+    conn: sqlite3.Connection,
+    *,
+    hits: list[dict[str, Any]],
+    collection_name: str,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    annotated: list[dict[str, Any]] = []
+    summary = {
+        "known_works": 0,
+        "pdf_cached": 0,
+        "document_materialized": 0,
+        "needs_mineru": 0,
+    }
+    for hit in hits:
+        local = _hit_local_status(conn, hit=hit, collection_name=collection_name)
+        item = copy.deepcopy(hit)
+        item["local_status"] = local
+        annotated.append(item)
+        if local["known_work"]:
+            summary["known_works"] += 1
+        if local["pdf_exists"]:
+            summary["pdf_cached"] += 1
+        if local["document_materialized"]:
+            summary["document_materialized"] += 1
+        if local["needs_mineru"]:
+            summary["needs_mineru"] += 1
+    return annotated, summary
+
+
+def _hit_local_status(
+    conn: sqlite3.Connection,
+    *,
+    hit: dict[str, Any],
+    collection_name: str,
+) -> dict[str, Any]:
+    work_id = _find_work_id_for_hit(conn, hit)
+    if work_id is None:
+        return {
+            "known_work": False,
+            "work_id": None,
+            "collection": collection_name,
+            "pdf_exists": False,
+            "pdf_path": None,
+            "document_exists": False,
+            "document_materialized": False,
+            "parse_status": None,
+            "parse_error": None,
+            "manifest_exists": False,
+            "manifest_path": None,
+            "needs_mineru": False,
+        }
+
+    effective_collection = infer_collection_name(conn, work_id) or collection_name
+    pdf_path = _pdf_path_for_work(conn, work_id=work_id, collection_name=effective_collection)
+    document_row = _document_row(conn, work_id=work_id)
+    manifest_path = Path(str(document_row["manifest_path"])).expanduser() if document_row and document_row["manifest_path"] else None
+    manifest_exists = bool(manifest_path and manifest_path.exists())
+    parse_status = str(document_row["parse_status"]) if document_row and document_row["parse_status"] else None
+    document_materialized = bool(document_row and parse_status == "materialized" and manifest_exists)
+    pdf_exists = pdf_path.exists()
+    return {
+        "known_work": True,
+        "work_id": work_id,
+        "collection": effective_collection,
+        "pdf_exists": pdf_exists,
+        "pdf_path": str(pdf_path) if pdf_exists else None,
+        "document_exists": document_row is not None,
+        "document_materialized": document_materialized,
+        "parse_status": parse_status,
+        "parse_error": str(document_row["parse_error"]) if document_row and document_row["parse_error"] else None,
+        "manifest_exists": manifest_exists,
+        "manifest_path": str(manifest_path) if manifest_path else None,
+        "needs_mineru": pdf_exists and not document_materialized,
+    }
+
+
 def initialize_workspace(config: dict[str, Any], *, collection_name: str | None = None) -> dict[str, Any]:
     ensure_db()
     collection_payload = runtime_collection_config(config, name=collection_name)
@@ -716,16 +840,25 @@ def fetch_online_candidates(
     limit: int,
     progress: ProgressCallback = None,
 ) -> dict[str, Any]:
+    ensure_db()
+    collection_name = str((config.get("collection") or {}).get("name") or "default")
     hits, search_plan = _search_online_hits(
         config,
         query=query,
         limit=limit,
         progress=progress,
     )
+    with connect() as conn:
+        hits, local_summary = _annotate_hits_with_local_status(
+            conn,
+            hits=hits,
+            collection_name=collection_name,
+        )
     _emit_progress(progress, f"found {len(hits)} candidate papers.")
     return {
         "query": query,
         "search_plan": search_plan,
+        "local_summary": local_summary,
         "effective_count": len(hits),
         "results": [summarize_hit(hit) for hit in hits],
     }
@@ -765,6 +898,12 @@ def ingest_online(
         "workspace_root": str(paths.workspace_root()),
         "collection": collection_payload["name"],
         "search_plan": search_plan,
+        "local_summary": {
+            "known_works": 0,
+            "pdf_cached": 0,
+            "document_materialized": 0,
+            "needs_mineru": 0,
+        },
         "metadata": {
             "hits_seen": len(hits),
             "created": 0,
@@ -793,6 +932,12 @@ def ingest_online(
     max_workers = max(1, int(download_cfg.get("max_download_workers") or 4))
 
     with connect() as conn:
+        hits, local_summary = _annotate_hits_with_local_status(
+            conn,
+            hits=hits,
+            collection_name=collection_payload["name"],
+        )
+        summary["local_summary"] = local_summary
         collection_id = upsert_collection(conn, collection_payload)
         run_id = _start_ingest_run(
             conn,
@@ -882,6 +1027,12 @@ def ingest_online(
                     summary["mineru"]["items"].append(parsed)
                 except Exception as exc:
                     summary["mineru"]["failed"] += 1
+                    _mark_document_parse_failed(
+                        conn,
+                        work_id=pdf_info["work_id"],
+                        collection_name=collection_payload["name"],
+                        error=str(exc),
+                    )
                     summary["mineru"]["items"].append(
                         {
                             "ok": False,
@@ -937,6 +1088,115 @@ def ingest_online(
                 citations_written=int(summary["metadata"]["citations_written"]),
             )
             raise
+
+        summary["snapshot"] = _snapshot(conn)
+    return summary
+
+
+def reparse_cached_pdfs(
+    config: dict[str, Any],
+    *,
+    collection_name: str | None = None,
+    limit: int | None = None,
+    work_ids: list[int] | None = None,
+    replace_existing: bool = False,
+    skip_index: bool = False,
+    skip_graph: bool = False,
+    progress: ProgressCallback = None,
+) -> dict[str, Any]:
+    ensure_db()
+    collection_payload = runtime_collection_config(config, name=collection_name)
+    embedding_cfg = config.get("embedding") or {}
+    mineru_client = _build_mineru_client(config)
+    if mineru_client is None:
+        raise ValueError("MinerU is disabled in config. Set mineru.enabled=true before reparsing PDFs.")
+
+    summary: dict[str, Any] = {
+        "workspace_root": str(paths.workspace_root()),
+        "collection": collection_payload["name"],
+        "selection": {
+            "limit": limit,
+            "work_ids": list(work_ids or []),
+            "replace_existing": bool(replace_existing),
+        },
+        "candidates_seen": 0,
+        "attempted": 0,
+        "materialized": 0,
+        "failed": 0,
+        "skipped": 0,
+        "items": [],
+        "search": None,
+        "vectors": None,
+        "graph": None,
+    }
+
+    with connect() as conn:
+        candidates = _select_reparse_candidates(
+            conn,
+            collection_name=collection_payload["name"],
+            limit=limit,
+            work_ids=work_ids,
+            replace_existing=replace_existing,
+        )
+        summary["candidates_seen"] = len(candidates)
+        if candidates:
+            _emit_progress(progress, f"reparsing {len(candidates)} cached PDFs with MinerU...")
+        for candidate in candidates:
+            summary["attempted"] += 1
+            try:
+                parsed = _parse_with_mineru(
+                    conn,
+                    config=config,
+                    client=mineru_client,
+                    work_id=int(candidate["work_id"]),
+                    pdf_path=Path(str(candidate["pdf_path"])),
+                    collection_name=collection_payload["name"],
+                    replace_existing=replace_existing,
+                )
+                summary["materialized"] += 1
+                summary["items"].append(parsed)
+            except Exception as exc:
+                summary["failed"] += 1
+                _mark_document_parse_failed(
+                    conn,
+                    work_id=int(candidate["work_id"]),
+                    collection_name=collection_payload["name"],
+                    error=str(exc),
+                )
+                summary["items"].append(
+                    {
+                        "ok": False,
+                        "work_id": int(candidate["work_id"]),
+                        "title": str(candidate["title"]),
+                        "error": str(exc),
+                    }
+                )
+
+        if not skip_index and summary["materialized"] > 0:
+            _emit_progress(progress, "building BM25 search indexes...")
+            summary["search"] = rebuild_search_indices(conn, target="all")
+            if bool(embedding_cfg.get("build_after_ingest", True)):
+                try:
+                    _emit_progress(progress, "building vector indexes...")
+                    summary["vectors"] = rebuild_vector_indices(
+                        conn,
+                        target="all",
+                        model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
+                        dim=int(embedding_cfg.get("dim") or 768),
+                    )
+                except Exception as exc:
+                    summary["vectors"] = {"ok": False, "error": str(exc)}
+        if not skip_graph and summary["materialized"] > 0:
+            try:
+                _emit_progress(progress, "building graph edges...")
+                summary["graph"] = rebuild_graph_edges(
+                    conn,
+                    target="all",
+                    collection=collection_payload["name"],
+                    similarity_model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
+                )
+            except Exception as exc:
+                summary["graph"] = {"ok": False, "error": str(exc)}
 
         summary["snapshot"] = _snapshot(conn)
     return summary
@@ -1229,39 +1489,84 @@ def _parse_with_mineru(
 ) -> dict[str, Any]:
     stem = paper_storage_stem(conn, work_id)
     dest_dir = parsed_doc_dir(collection_name, stem)
-    if (dest_dir / "manifest.json").exists() and not replace_existing:
-        return {
-            "ok": True,
-            "work_id": work_id,
-            "title": _work_title(conn, work_id),
-            "state": "cached",
-            "parsed_dir": str(dest_dir),
-        }
+    manifest_path = dest_dir / "manifest.json"
+    document_row = _document_row(conn, work_id=work_id)
+    if manifest_path.exists() and not replace_existing:
+        if document_row is not None and str(document_row["parse_status"] or "") == "materialized":
+            return {
+                "ok": True,
+                "work_id": work_id,
+                "title": _work_title(conn, work_id),
+                "state": "cached",
+                "parsed_dir": str(dest_dir),
+            }
+        return _materialize_existing_manifest(
+            conn,
+            config=config,
+            work_id=work_id,
+            manifest_path=manifest_path,
+            replace_existing=document_row is not None,
+        )
 
     raw_zip_dir = paths.RAW_DIR / "mineru" / collection_name
     raw_zip_dir.mkdir(parents=True, exist_ok=True)
     zip_path = raw_zip_dir / f"{stem}.zip"
+    _upsert_document_parse_record(
+        conn,
+        work_id=work_id,
+        parse_status="submitted",
+        parsed_dir=dest_dir,
+        manifest_path=manifest_path,
+        parse_error=None,
+    )
     task = client.submit_local_pdf(pdf_path, data_id=stem)
     client.download_result_zip(task, output_path=zip_path)
     import_mineru_source(source_path=zip_path, dest_dir=dest_dir, replace=replace_existing)
 
+    result = _materialize_existing_manifest(
+        conn,
+        config=config,
+        work_id=work_id,
+        manifest_path=manifest_path,
+        replace_existing=True,
+    )
+    result["state"] = task.state
+    result["zip_path"] = str(zip_path)
+    return result
+
+
+def _materialize_existing_manifest(
+    conn: sqlite3.Connection,
+    *,
+    config: dict[str, Any],
+    work_id: int,
+    manifest_path: Path,
+    replace_existing: bool,
+) -> dict[str, Any]:
     ingest_cfg = config.get("ingest") or {}
     summary = materialize_mineru_document(
         conn,
         work_id=work_id,
-        manifest_path=dest_dir / "manifest.json",
+        manifest_path=manifest_path,
         replace=replace_existing,
         chunk_size=int(ingest_cfg.get("chunk_size") or 2400),
         overlap_blocks=int(ingest_cfg.get("overlap_blocks") or 1),
         section_parent_char_limit=int(ingest_cfg.get("section_parent_char_limit") or 12000),
     )
+    _upsert_document_parse_record(
+        conn,
+        work_id=work_id,
+        parse_status="materialized",
+        parsed_dir=manifest_path.parent,
+        manifest_path=manifest_path,
+        parse_error=None,
+    )
     return {
         "ok": True,
         "work_id": work_id,
         "title": _work_title(conn, work_id),
-        "state": task.state,
-        "parsed_dir": str(dest_dir),
-        "zip_path": str(zip_path),
+        "state": "materialized",
+        "parsed_dir": str(manifest_path.parent),
         "document": summary,
     }
 
@@ -1401,6 +1706,24 @@ def _build_answer_messages(
 
 def _find_work_id_for_hit(conn: sqlite3.Connection, hit: dict[str, Any]) -> int | None:
     metadata = hit.get("metadata") or {}
+    for id_type, id_value in (
+        ("inspire", str(metadata.get("control_number") or "").strip() or None),
+        ("arxiv", first_arxiv_id(metadata)),
+        ("doi", first_doi(metadata)),
+    ):
+        if not id_value:
+            continue
+        row = conn.execute(
+            """
+            SELECT work_id
+            FROM work_ids
+            WHERE id_type = ? AND id_value = ?
+            """,
+            (id_type, str(id_value).strip()),
+        ).fetchone()
+        if row is not None:
+            return int(row["work_id"])
+
     source, external_id = canonical_identity(metadata)
     row = conn.execute(
         """
@@ -1413,6 +1736,128 @@ def _find_work_id_for_hit(conn: sqlite3.Connection, hit: dict[str, Any]) -> int 
     if row is None:
         return None
     return int(row["work_id"])
+
+
+def _document_row(conn: sqlite3.Connection, *, work_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT document_id, parse_status, parsed_dir, manifest_path, parse_error
+        FROM documents
+        WHERE work_id = ?
+        ORDER BY document_id DESC
+        LIMIT 1
+        """,
+        (work_id,),
+    ).fetchone()
+
+
+def _pdf_path_for_work(conn: sqlite3.Connection, *, work_id: int, collection_name: str) -> Path:
+    stem = paper_storage_stem(conn, work_id)
+    return paths.PDF_DIR / collection_name / f"{stem}.pdf"
+
+
+def _upsert_document_parse_record(
+    conn: sqlite3.Connection,
+    *,
+    work_id: int,
+    parse_status: str,
+    parsed_dir: Path | None,
+    manifest_path: Path | None,
+    parse_error: str | None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO documents (
+          work_id, parser_name, parser_version, parse_status, parsed_dir, manifest_path, parse_error, last_parse_attempt_at, updated_at
+        ) VALUES (?, 'mineru', 'v2-contract', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(work_id) DO UPDATE SET
+          parser_name = excluded.parser_name,
+          parser_version = excluded.parser_version,
+          parse_status = excluded.parse_status,
+          parsed_dir = excluded.parsed_dir,
+          manifest_path = excluded.manifest_path,
+          parse_error = excluded.parse_error,
+          last_parse_attempt_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            work_id,
+            parse_status,
+            str(parsed_dir) if parsed_dir is not None else None,
+            str(manifest_path) if manifest_path is not None else None,
+            str(parse_error) if parse_error else None,
+        ),
+    )
+
+
+def _mark_document_parse_failed(
+    conn: sqlite3.Connection,
+    *,
+    work_id: int,
+    collection_name: str,
+    error: str,
+) -> None:
+    dest_dir = parsed_doc_dir(collection_name, paper_storage_stem(conn, work_id))
+    manifest_path = dest_dir / "manifest.json"
+    _upsert_document_parse_record(
+        conn,
+        work_id=work_id,
+        parse_status="failed",
+        parsed_dir=dest_dir,
+        manifest_path=manifest_path if manifest_path.exists() else None,
+        parse_error=error,
+    )
+
+
+def _select_reparse_candidates(
+    conn: sqlite3.Connection,
+    *,
+    collection_name: str,
+    limit: int | None,
+    work_ids: list[int] | None,
+    replace_existing: bool,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT w.work_id, w.title
+        FROM works w
+        JOIN collection_works cw ON cw.work_id = w.work_id
+        JOIN collections c ON c.collection_id = cw.collection_id
+        WHERE c.name = ?
+        ORDER BY w.work_id
+        """,
+        (collection_name,),
+    ).fetchall()
+    requested = {int(item) for item in (work_ids or [])}
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        work_id = int(row["work_id"])
+        if requested and work_id not in requested:
+            continue
+        pdf_path = _pdf_path_for_work(conn, work_id=work_id, collection_name=collection_name)
+        if not pdf_path.exists():
+            continue
+        document_row = _document_row(conn, work_id=work_id)
+        manifest_path = Path(str(document_row["manifest_path"])).expanduser() if document_row and document_row["manifest_path"] else None
+        document_materialized = bool(
+            document_row
+            and str(document_row["parse_status"] or "") == "materialized"
+            and manifest_path is not None
+            and manifest_path.exists()
+        )
+        if not replace_existing and document_materialized:
+            continue
+        candidates.append(
+            {
+                "work_id": work_id,
+                "title": str(row["title"]),
+                "pdf_path": str(pdf_path),
+                "parse_status": str(document_row["parse_status"]) if document_row and document_row["parse_status"] else None,
+            }
+        )
+        if limit is not None and len(candidates) >= max(1, int(limit)):
+            break
+    return candidates
 
 
 def _work_title(conn: sqlite3.Connection, work_id: int) -> str | None:

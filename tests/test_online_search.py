@@ -174,6 +174,37 @@ class OnlineSearchTests(unittest.TestCase):
         self.assertEqual(hit_ids, [1818160, 1794169, 1847777])
         self.assertEqual(search_plan["dedupe_removed"], 1)
 
+    def test_search_online_hits_keeps_distinct_articles_with_similar_titles(self) -> None:
+        config = default_config()
+        config["llm"]["enabled"] = False
+
+        with mock.patch(
+            "hep_rag_v2.pipeline.search_literature",
+            return_value=[
+                _hit(
+                    3000001,
+                    "Measurement of electroweak production of same-sign W boson pairs in association with two jets",
+                    doc_types=["article"],
+                    year=2021,
+                    arxiv_id="2101.00001",
+                    doi="10.1000/article-a",
+                ),
+                _hit(
+                    3000002,
+                    "Measurement of electroweak production of same-sign W boson pairs in association with two jets",
+                    doc_types=["article"],
+                    year=2021,
+                    arxiv_id="2101.00002",
+                    doi="10.1000/article-b",
+                ),
+            ],
+        ):
+            hits, search_plan = _search_online_hits(config, query="same-sign WW", limit=5)
+
+        hit_ids = [hit["metadata"]["control_number"] for hit in hits]
+        self.assertEqual(hit_ids, [3000001, 3000002])
+        self.assertEqual(search_plan["dedupe_removed"], 0)
+
     def test_search_online_hits_skips_query_rewrite_for_structured_queries(self) -> None:
         config = default_config()
         config["llm"]["enabled"] = True

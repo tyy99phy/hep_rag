@@ -13,6 +13,7 @@ from .ingest import (
     cmd_ingest_metadata,
     cmd_ingest_online,
     cmd_query,
+    cmd_reparse_pdfs,
     cmd_resolve_citations,
     cmd_search_works,
 )
@@ -69,6 +70,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--skip-index", action="store_true", help="Skip rebuilding search/vector indices after ingest")
     s.add_argument("--skip-graph", action="store_true", help="Skip rebuilding graph edges after ingest")
     s.set_defaults(func=cmd_ingest_online)
+
+    s = sub.add_parser("reparse-pdfs", help="Submit cached local PDFs that still need MinerU materialization")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
+    s.add_argument("--collection", default=None, help="Override collection name")
+    s.add_argument("--limit", type=int, default=None, help="Maximum number of cached PDFs to reparse")
+    s.add_argument("--work-id", type=int, action="append", default=None, help="Restrict to specific work_id values")
+    s.add_argument("--replace-existing", action="store_true", help="Rebuild already materialized documents from local PDFs")
+    s.add_argument("--skip-index", action="store_true", help="Skip rebuilding search/vector indices after reparse")
+    s.add_argument("--skip-graph", action="store_true", help="Skip rebuilding graph edges after reparse")
+    s.set_defaults(func=cmd_reparse_pdfs)
 
     s = sub.add_parser("query", help="Run config-driven retrieval and return structured evidence")
     s.add_argument("query")
