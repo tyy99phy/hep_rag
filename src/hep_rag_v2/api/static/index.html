@@ -537,6 +537,29 @@
       vertical-align: baseline;
     }
 
+    .md-ref-link {
+      text-decoration: none;
+    }
+
+    .evidence-target {
+      scroll-margin-top: 18px;
+    }
+
+    .evidence-flash {
+      animation: evidenceFlash 1.8s ease;
+      border-color: rgba(31, 107, 72, 0.45);
+      box-shadow: 0 0 0 4px rgba(31, 107, 72, 0.12);
+    }
+
+    @keyframes evidenceFlash {
+      0% {
+        background: rgba(31, 107, 72, 0.18);
+      }
+      100% {
+        background: rgba(255,255,255,0.78);
+      }
+    }
+
     .hidden {
       display: none;
     }
@@ -856,25 +879,26 @@
         badge(`Works ${works.length}`),
         badge(`Chunks ${chunks.length}`),
         `</div>`,
-        `<div class="result-subtitle">Display mode now renders the answer as Markdown and keeps evidence below as structured cards.</div>`,
+        `<div class="result-subtitle">Display mode now renders the answer as Markdown. Click citations like [W1] or [C2] to jump to the matching evidence card below.</div>`,
         `<div class="result-answer md-content">${renderMarkdown(data.answer || "")}</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Evidence Snapshot</h3>`,
         `<div class="evidence-overview">`,
         `<div class="result-note">Paper-level evidence gives the document identity and coarse context. Chunk-level evidence carries the fine-grained passage text that should support the answer.</div>`,
+        `<div class="result-note">Answer citations are now clickable and will scroll to the matching work or chunk evidence.</div>`,
         `</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Evidence Works</h3>`,
         works.length
-          ? `<div class="result-list">${works.map((item) => renderWorkCard(item, { emphasizeEvidence: true })).join("")}</div>`
+          ? `<div class="result-list">${works.map((item, index) => renderWorkCard(item, { emphasizeEvidence: true, refType: "W", refIndex: index + 1 })).join("")}</div>`
           : `<div class="result-note">No work-level evidence attached.</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Evidence Chunks</h3>`,
         chunks.length
-          ? `<div class="result-list">${chunks.map((item) => renderChunkCard(item, { emphasizeEvidence: true })).join("")}</div>`
+          ? `<div class="result-list">${chunks.map((item, index) => renderChunkCard(item, { emphasizeEvidence: true, refType: "C", refIndex: index + 1 })).join("")}</div>`
           : `<div class="result-note">No chunk-level evidence attached.</div>`,
         `</div>`,
       ].join("");
@@ -949,11 +973,16 @@
       const relatedVersions = Array.isArray(item.related_versions) ? item.related_versions : [];
       const relatedRetrieved = Array.isArray(item.retrieved_family_versions) ? item.retrieved_family_versions : [];
       const abstract = truncateText(item.abstract || "", options.emphasizeEvidence ? 360 : 280) || "No abstract available.";
+      const evidenceRef = options.refType && options.refIndex ? `${options.refType}${options.refIndex}` : "";
+      const evidenceAttrs = evidenceRef
+        ? ` id="${escapeHtml(evidenceRefId(evidenceRef))}" data-evidence-ref="${escapeHtml(evidenceRef)}" class="result-card evidence-target"`
+        : ` class="result-card"`;
       return `
-        <div class="result-card">
+        <div${evidenceAttrs}>
           <div class="result-card-title">${escapeHtml(item.raw_title || item.title || "Untitled work")}</div>
           <div class="result-card-subtitle">${escapeHtml(item.family_primary_work_id === item.work_id ? "Primary family record" : "Related family record")}</div>
           <div class="result-card-meta">
+            ${evidenceRef ? badge(`Ref ${escapeHtml(evidenceRef)}`) : ``}
             ${badge(`Rank ${item.rank ?? "-"}`)}
             ${badge(`Score ${formatScore(item.hybrid_score)}`)}
             ${badge(`Year ${item.year ?? "?"}`)}
@@ -1005,11 +1034,16 @@
     function renderChunkCard(item, options = {}) {
       const fullText = String(item.clean_text || item.text || "").trim();
       const preview = truncateText(fullText, options.emphasizeEvidence ? 240 : 420) || "No chunk text available.";
+      const evidenceRef = options.refType && options.refIndex ? `${options.refType}${options.refIndex}` : "";
+      const evidenceAttrs = evidenceRef
+        ? ` id="${escapeHtml(evidenceRefId(evidenceRef))}" data-evidence-ref="${escapeHtml(evidenceRef)}" class="result-card evidence-target"`
+        : ` class="result-card"`;
       return `
-        <div class="result-card">
+        <div${evidenceAttrs}>
           <div class="result-card-title">${escapeHtml(item.raw_title || `Chunk ${item.chunk_id || ""}`)}</div>
           <div class="result-card-subtitle">${escapeHtml(item.section_hint || "No section hint")}</div>
           <div class="result-card-meta">
+            ${evidenceRef ? badge(`Ref ${escapeHtml(evidenceRef)}`) : ``}
             ${badge(`Rank ${item.rank ?? "-"}`)}
             ${badge(`Score ${formatScore(item.hybrid_score)}`)}
             ${badge(`Role ${escapeHtml(item.chunk_role || "chunk")}`)}
@@ -1060,6 +1094,23 @@
 
     function badge(text) {
       return `<span class="result-badge">${text}</span>`;
+    }
+
+    function evidenceRefId(ref) {
+      return `evidence-${String(ref || "").trim()}`;
+    }
+
+    function scrollToEvidenceRef(ref) {
+      const target = document.getElementById(evidenceRefId(ref));
+      if (!target) return false;
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      target.classList.remove("evidence-flash");
+      void target.offsetWidth;
+      target.classList.add("evidence-flash");
+      window.setTimeout(() => {
+        target.classList.remove("evidence-flash");
+      }, 1800);
+      return true;
     }
 
     function formatScore(value) {
@@ -1171,7 +1222,10 @@
       });
 
       let html = escapeHtml(tokenized);
-      html = html.replace(/\[([WC]\d+)\]/g, (_, ref) => `<span class="md-ref">[${escapeHtml(ref)}]</span>`);
+      html = html.replace(
+        /\[([WC]\d+)\]/g,
+        (_, ref) => `<a href="#${escapeHtml(evidenceRefId(ref))}" class="md-ref-link" data-evidence-ref="${escapeHtml(ref)}"><span class="md-ref">[${escapeHtml(ref)}]</span></a>`
+      );
       html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
       html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
       html = html.replace(/@@INLINECODE(\d+)@@/g, (_, rawIndex) => codeTokens[Number(rawIndex)] || "");
@@ -1385,6 +1439,14 @@
       if (!state.authEnabled || readToken()) {
         refreshWorkspace();
       }
+    });
+    resultDisplayEl.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target.closest("[data-evidence-ref]") : null;
+      if (!target) return;
+      const ref = target.getAttribute("data-evidence-ref");
+      if (!ref) return;
+      event.preventDefault();
+      scrollToEvidenceRef(ref);
     });
 
     (async () => {
