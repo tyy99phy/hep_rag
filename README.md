@@ -58,6 +58,9 @@ hep-rag fetch-papers "rare decay eta to four muons CMS" \
 hep-rag ingest-online "rare decay eta to four muons CMS" \
   --config ./hep-rag.yaml --limit 10 --download-limit 10 --parse-limit 10
 
+# 4b. 对本地已有 PDF 做增量 MinerU 重解析
+hep-rag reparse-pdfs --config ./hep-rag.yaml --collection default
+
 # 5. 检索（不调用 LLM）
 hep-rag query "eta meson rare decay branching fraction" \
   --config ./hep-rag.yaml --limit 8
@@ -113,6 +116,8 @@ llm:
 
 完整字段说明见 [`config.example.yaml`](config.example.yaml)。
 
+`fetch-papers` / `ingest-online` 在在线检索阶段会先做多 query 改写，再对命中结果去重后截取 top-N；返回结果里还会带 `local_summary` 和 `local_status`，用于标记本地是否已有该 work、PDF 是否已缓存、MinerU 是否已经 materialize。
+
 ## CLI 命令一览
 
 | 命令 | 说明 |
@@ -121,6 +126,7 @@ llm:
 | `init` | 初始化数据库 |
 | `fetch-papers` | 在线搜索 InspireHEP，预览候选论文 |
 | `ingest-online` | 搜索 + 下载 + 解析 + 建索引（全流程） |
+| `reparse-pdfs` | 仅对本地已有 PDF 且尚未成功 materialize 的 work 重新提交 MinerU |
 | `ingest-metadata` | 仅导入元数据（不下载 PDF） |
 | `import-mineru` | 手动导入 MinerU 解析结果 |
 | `enrich-inspire-metadata` | 补全引文、摘要等字段 |
