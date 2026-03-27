@@ -11,6 +11,7 @@ online:
   published_only: true
   query_suffix: ""
   page_size: 25
+  max_parallelism: 4
   timeout_sec: 60
   retries: 3
   sleep_sec: 0.2
@@ -29,6 +30,13 @@ online:
     - keywords
     - preprint_date
     - publication_info
+
+query_rewrite:
+  enabled: true
+  max_queries: 4
+  per_query_limit: 15
+  temperature: 0.0
+  max_tokens: 320
 
 download:
   timeout_sec: 120
@@ -65,10 +73,17 @@ ingest:
 retrieval:
   target: auto
   limit: 8
+  max_parallelism: 2
   graph_expand: null
   seed_limit: 5
   chunk_limit: 12
   answer_evidence_limit: 6
+
+api:
+  auth_token: ""
+  enable_ui: true
+  job_max_workers: 2
+  job_max_events: 1000
 
 llm:
   enabled: false

@@ -8,7 +8,10 @@
 InspireHEP API
     │
     ▼
-元数据入库 (works, citations, authors, topics)
+多 query 在线检索 + family-aware 合并 / 去重
+    │
+    ▼
+元数据入库 (works, citations, authors, topics, work families)
     │
     ▼
 PDF 下载 (并行 ThreadPoolExecutor)
@@ -21,7 +24,7 @@ MinerU 全文解析 → sections → blocks → chunks
     └── 图结构边 (引文、书目耦合、共被引、向量相似度)
             │
             ▼
-        混合检索 + LLM 问答
+    work / chunk 双层混合检索 + LLM 问答
 ```
 
 ## 安装
@@ -85,6 +88,12 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 `hep-rag init-config` 会生成默认配置文件，关键字段：
 
 ```yaml
+online:
+  max_parallelism: 4                # 在线多 query 检索的最大并行数
+
+download:
+  max_download_workers: 4           # PDF 下载并行数
+
 mineru:
   enabled: true                      # 开启全文解析
   api_base: https://mineru.net/api/v4
@@ -92,6 +101,9 @@ mineru:
 
 embedding:
   model: hash-idf-v1                 # 内置无依赖模型，或填 sentence-transformers 模型名
+
+retrieval:
+  max_parallelism: 2                # 本地混合检索中 BM25 / 向量的最大并行数
 
 api:
   auth_token: ""                     # 为空表示不鉴权；设置后支持 Bearer / X-API-Key
@@ -132,7 +144,7 @@ llm:
 
 完整字段说明见 [`config.example.yaml`](config.example.yaml)。
 
-`fetch-papers` / `ingest-online` 在在线检索阶段会先做多 query 改写，再对命中结果去重后截取 top-N；返回结果里还会带 `local_summary` 和 `local_status`，用于标记本地是否已有该 work、PDF 是否已缓存、MinerU 是否已经 materialize。
+`fetch-papers` / `ingest-online` 在在线检索阶段会先做多 query 改写，再对命中结果做 family-aware 去重后截取 top-N；同一 work 的 note / preprint / article 等相关版本会保留在返回结果的 `related_versions` 中。返回结果里还会带 `local_summary` 和 `local_status`，用于标记本地是否已有该 work、PDF 是否已缓存、MinerU 是否已经 materialize。
 
 ## Web / API
 
@@ -158,13 +170,13 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 然后打开 `http://127.0.0.1:8000/`。页面主要分成两块：
 
 - 左侧是输入区和任务日志
-- 右侧是接口返回的结构化 JSON
+- 右侧是结果区，支持 `Display` / `Raw` 两种模式
 
 推荐的使用顺序：
 
 1. 先看顶部 `Workspace` 卡片，确认当前服务绑定的是你期望的 workspace。
 2. 如果你设置了 `api.auth_token`，先把 token 填到 `API Token` 输入框；未设置时可以留空。
-3. 在 `Query` 里输入主题，例如 `CMS VBS SSWW`，再按需填写 `Collection`、`Limit`、`Target`、`Ask Mode`、`Download Limit`、`Parse Limit`。
+3. 在 `Query` 里输入主题，例如 `CMS VBS SSWW`，再按需填写 `Collection`、`Limit`、`Target`、`Ask Mode`、`Download Limit`、`Parse Limit`、`Max Parallel`。
 4. 点击 `Fetch Papers` 预览在线搜索结果。这个步骤不会改本地数据库，适合先检查 query 改写和召回是否合理。
 5. 点击 `Retrieve` 只做本地检索，返回 works / chunks 证据，适合检查当前数据库里能不能回答问题。
 6. 点击 `Ask` 会先检索再调用配置好的 LLM，返回最终答案和引用证据。
@@ -178,8 +190,9 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 - `Ask`：本地检索 + LLM 生成
 - `Start Ingest Job`：在线搜索 + 元数据入库 + PDF 下载 + MinerU 解析 + 索引 / 图谱构建
 - `Refresh Workspace`：刷新 works、documents、chunks、citations 统计
+- `Clear Log`：清空当前页面上的任务日志显示
 
-页面右侧返回的是原始 JSON，便于直接观察真实 API 行为；如果要逐个调试接口参数，可以打开 `/docs` 用 Swagger UI 交互调用。
+页面右侧结果区支持两种模式：`Display` 适合直接阅读问答结果和证据卡片，`Raw` 保留完整 JSON，便于观察真实 API 行为；如果要逐个调试接口参数，可以打开 `/docs` 用 Swagger UI 交互调用。
 
 ## CLI 命令一览
 
