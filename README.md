@@ -2,13 +2,11 @@
 
 配置驱动的高能物理文献图谱与检索框架。从 InspireHEP 在线检索论文元数据，下载 PDF 并解析全文，构建引用图谱和向量索引，支持 BM25 / 向量 / 混合检索与 LLM 问答。
 
-## 测试 / Runbooks
+## 测试方法
 
-如果你想快速试用、导入文章或做 benchmark，建议先看：
+如果你想快速试用、导入文章或做 benchmark，建议看：
 
-- [`docs/runbooks/user-testing.md`](docs/runbooks/user-testing.md)：导入文章、启动 Web/API、做用户端测试
-- [`docs/runbooks/scale-benchmark.md`](docs/runbooks/scale-benchmark.md)：`10k / 50k / 100k` metadata-only 基准
-- [`docs/runbooks/rag-effect-benchmark.md`](docs/runbooks/rag-effect-benchmark.md)：弱模型 vs 弱模型+数据库 的效果对照
+- [`docs/testing.md`](docs/testing.md)
 
 ## 架构
 
@@ -334,9 +332,7 @@ python -m pytest tests/ -v
 
 更完整的试用与测试流程见：
 
-- [`docs/runbooks/user-testing.md`](docs/runbooks/user-testing.md)
-- [`docs/runbooks/scale-benchmark.md`](docs/runbooks/scale-benchmark.md)
-- [`docs/runbooks/rag-effect-benchmark.md`](docs/runbooks/rag-effect-benchmark.md)
+- [`docs/testing.md`](docs/testing.md)
 
 ## License
 
