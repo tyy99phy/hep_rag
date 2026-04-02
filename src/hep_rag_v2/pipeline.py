@@ -36,6 +36,7 @@ from hep_rag_v2.providers.inspire import (
 from hep_rag_v2.providers.local_transformers import LocalTransformersClient
 from hep_rag_v2.providers.mineru_api import MinerUClient
 from hep_rag_v2.providers.openai_compatible import OpenAICompatibleClient
+from hep_rag_v2.providers.pdg import resolve_pdg_reference, stage_pdg_pdf
 from hep_rag_v2.records import infer_collection_name, paper_storage_stem, parsed_doc_dir
 from hep_rag_v2.search import rebuild_search_indices
 from hep_rag_v2.vector import (
@@ -1478,6 +1479,160 @@ def reparse_cached_pdfs(
         summary["snapshot"] = _snapshot(conn)
     return summary
 
+
+
+def import_pdg(
+    config: dict[str, Any],
+    *,
+    edition: str | int,
+    collection_name: str | None = None,
+    pdf_path: str | Path | None = None,
+    download: bool = False,
+    progress: ProgressCallback = None,
+) -> dict[str, Any]:
+    ensure_db()
+    resolved_collection = str(collection_name or (config.get("collection") or {}).get("name") or "pdg").strip() or "pdg"
+    workspace = initialize_workspace(config, collection_name=resolved_collection)
+    reference = resolve_pdg_reference(edition=edition)
+    _emit_progress(progress, f"preparing PDG archival import for {reference['canonical_id']}...")
+
+    with connect() as conn:
+        collection_payload = runtime_collection_config(config, name=resolved_collection)
+        collection_id = upsert_collection(conn, collection_payload)
+        work_id = _upsert_archival_work(conn, collection_id=collection_id, reference=reference)
+        stem = paper_storage_stem(conn, work_id)
+        output_path = paths.PDF_DIR / resolved_collection / f"{stem}.pdf"
+        pdf = stage_pdg_pdf(reference, output_path=output_path, pdf_path=pdf_path, download=download)
+        document = _upsert_archival_document_record(
+            conn,
+            work_id=work_id,
+            collection_name=resolved_collection,
+            stem=stem,
+            parser_name="pdg",
+            parser_version=str(reference["edition"]),
+            parse_status="pdf_ready" if bool(pdf.get("ok")) else "awaiting_pdf",
+            parse_error=None if bool(pdf.get("ok")) else "PDG PDF not staged yet",
+        )
+        conn.commit()
+
+    return {
+        "workspace": workspace,
+        "collection": workspace["collection"],
+        "reference": reference,
+        "work": {
+            "work_id": work_id,
+            "canonical_source": reference["canonical_source"],
+            "canonical_id": reference["canonical_id"],
+            "title": reference["title"],
+        },
+        "pdf": pdf,
+        "document": document,
+    }
+
+
+def _upsert_archival_work(
+    conn: sqlite3.Connection,
+    *,
+    collection_id: int,
+    reference: dict[str, Any],
+) -> int:
+    row = conn.execute(
+        "SELECT work_id FROM works WHERE canonical_source = ? AND canonical_id = ?",
+        (reference["canonical_source"], reference["canonical_id"]),
+    ).fetchone()
+    payload = (
+        reference["canonical_source"],
+        reference["canonical_id"],
+        reference["title"],
+        int(reference.get("year") or 0) or None,
+        str(reference.get("landing_url") or "").strip() or None,
+        str(reference.get("pdf_url") or "").strip() or None,
+        json.dumps(reference, ensure_ascii=False),
+    )
+    if row is None:
+        cur = conn.execute(
+            """
+            INSERT INTO works (
+              canonical_source, canonical_id, title, year, primary_source_url, primary_pdf_url, raw_metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        work_id = int(cur.lastrowid)
+    else:
+        work_id = int(row["work_id"])
+        conn.execute(
+            """
+            UPDATE works
+            SET title = ?, year = ?, primary_source_url = ?, primary_pdf_url = ?, raw_metadata_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE work_id = ?
+            """,
+            (
+                reference["title"],
+                int(reference.get("year") or 0) or None,
+                str(reference.get("landing_url") or "").strip() or None,
+                str(reference.get("pdf_url") or "").strip() or None,
+                json.dumps(reference, ensure_ascii=False),
+                work_id,
+            ),
+        )
+    conn.execute(
+        "INSERT OR IGNORE INTO work_ids (id_type, id_value, work_id, is_primary) VALUES (?, ?, ?, 1)",
+        ("pdg", str(reference["canonical_id"]), work_id),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO collection_works (collection_id, work_id) VALUES (?, ?)",
+        (collection_id, work_id),
+    )
+    return work_id
+
+
+def _upsert_archival_document_record(
+    conn: sqlite3.Connection,
+    *,
+    work_id: int,
+    collection_name: str,
+    stem: str,
+    parser_name: str,
+    parser_version: str,
+    parse_status: str,
+    parse_error: str | None,
+) -> dict[str, Any]:
+    parsed_dir = parsed_doc_dir(collection_name, stem)
+    manifest_path = parsed_dir / "manifest.json"
+    conn.execute(
+        """
+        INSERT INTO documents (
+          work_id, parser_name, parser_version, parse_status, parsed_dir, manifest_path, parse_error, last_parse_attempt_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(work_id) DO UPDATE SET
+          parser_name = excluded.parser_name,
+          parser_version = excluded.parser_version,
+          parse_status = excluded.parse_status,
+          parsed_dir = excluded.parsed_dir,
+          manifest_path = excluded.manifest_path,
+          parse_error = excluded.parse_error,
+          last_parse_attempt_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            work_id,
+            parser_name,
+            parser_version,
+            parse_status,
+            str(parsed_dir),
+            str(manifest_path),
+            parse_error,
+        ),
+    )
+    return {
+        "parser_name": parser_name,
+        "parser_version": parser_version,
+        "parse_status": parse_status,
+        "parsed_dir": str(parsed_dir),
+        "manifest_path": str(manifest_path),
+        "parse_error": parse_error,
+    }
 
 def retrieve(
     config: dict[str, Any],

@@ -20,7 +20,7 @@ from hep_rag_v2.metadata import (
     upsert_collection,
     upsert_work_from_hit,
 )
-from hep_rag_v2.pipeline import ask, fetch_online_candidates, ingest_online, reparse_cached_pdfs, retrieve
+from hep_rag_v2.pipeline import ask, fetch_online_candidates, import_pdg, ingest_online, reparse_cached_pdfs, retrieve
 from hep_rag_v2.search import rebuild_search_indices
 
 from ._common import (
@@ -112,6 +112,25 @@ def cmd_reparse_pdfs(args: argparse.Namespace) -> None:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
+
+
+def cmd_import_pdg(args: argparse.Namespace) -> None:
+    try:
+        emit_cli_status("loading config...")
+        _, config = apply_runtime_config(config_path=args.config, workspace_root=args.workspace)
+        emit_cli_status("preparing PDG archival import...")
+        payload = import_pdg(
+            config,
+            edition=args.edition,
+            collection_name=args.collection,
+            pdf_path=args.pdf,
+            download=args.download,
+            progress=emit_cli_status,
+        )
+        emit_cli_status("PDG archival import finished.")
+    except Exception as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 def cmd_query(args: argparse.Namespace) -> None:
     try:

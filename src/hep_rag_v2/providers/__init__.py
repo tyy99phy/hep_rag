@@ -5,4 +5,5 @@ __all__ = [
     "local_transformers",
     "mineru_api",
     "openai_compatible",
+    "pdg",
 ]
