@@ -12,6 +12,32 @@ from hep_rag_v2 import paths
 
 
 DEFAULT_CONFIG_NAME = "hep-rag.yaml"
+DEFAULT_EMBEDDING_PROFILES: dict[str, dict[str, Any]] = {
+    "bootstrap": {
+        "model": "hash-idf-v1",
+        "dim": 768,
+        "runtime": {
+            "device": "cpu",
+            "batch_size": 32,
+        },
+    },
+    "semantic_small_local": {
+        "model": "sentence-transformers:BAAI/bge-small-en-v1.5",
+        "dim": 384,
+        "runtime": {
+            "device": "cuda",
+            "batch_size": 64,
+        },
+    },
+    "semantic_prod_local": {
+        "model": "sentence-transformers:BAAI/bge-base-en-v1.5",
+        "dim": 768,
+        "runtime": {
+            "device": "cuda",
+            "batch_size": 32,
+        },
+    },
+}
 DEFAULT_INSPIRE_FIELDS = [
     "titles",
     "abstracts",
@@ -31,8 +57,23 @@ DEFAULT_INSPIRE_FIELDS = [
 ]
 
 DEFAULT_CONFIG: dict[str, Any] = {
+    "modes": {
+        "build": "full",
+        "retrieval": "hybrid",
+    },
+    "profiles": {
+        "structure": "default",
+        "embedding": "bootstrap",
+        "pdg": "default",
+    },
     "workspace": {
         "root": "./workspace",
+    },
+    "build": {
+        "mode": "full",
+        "structure_backend": "api_llm",
+        "embedding_source": "local_profile",
+        "allow_silent_fallback": False,
     },
     "collection": {
         "name": "default",
@@ -79,19 +120,42 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "embedding": {
         "model": "hash-idf-v1",
         "dim": 768,
+        "profile": "bootstrap",
         "build_after_ingest": True,
+        "allow_silent_fallback": False,
+        "runtime": {
+            "device": "cpu",
+            "batch_size": 32,
+        },
         "chroma": {
             "enabled": False,
             "dir": None,
         },
     },
+    "embedding_profiles": copy.deepcopy(DEFAULT_EMBEDDING_PROFILES),
     "ingest": {
         "chunk_size": 2400,
         "overlap_blocks": 1,
         "section_parent_char_limit": 12000,
     },
+    "structure": {
+        "require_default_signatures": True,
+        "result_limit": 8,
+        "method_limit": 8,
+        "profile": "default",
+        "builder": "heuristic-v1",
+        "backend": "api_llm",
+        "allow_silent_fallback": False,
+    },
+    "pdg": {
+        "profile": "default",
+        "source_id": "pdg",
+        "title": "Particle Data Group",
+        "max_capsule_chars": 1200,
+    },
     "retrieval": {
         "target": "auto",
+        "mode": "hybrid",
         "limit": 8,
         "max_parallelism": 2,
         "graph_expand": None,
@@ -221,6 +285,33 @@ def runtime_collection_config(config: dict[str, Any], *, name: str | None = None
         "queries": {"inspire": []},
         "fields": fields,
     }
+
+
+def resolve_mode(config: dict[str, Any], kind: str, *, default: str) -> str:
+    modes = config.get("modes") or {}
+    legacy = config.get(kind) or {}
+    value = str(modes.get(kind) or legacy.get("mode") or default).strip()
+    return value or default
+
+
+def resolve_embedding_profile(config: dict[str, Any], *, name: str | None = None) -> dict[str, Any]:
+    profiles = copy.deepcopy(DEFAULT_EMBEDDING_PROFILES)
+    custom_profiles = config.get("embedding_profiles") or {}
+    _deep_update(profiles, custom_profiles)
+
+    embedding = config.get("embedding") or {}
+    selected = (
+        name
+        or str((config.get("profiles") or {}).get("embedding") or "").strip()
+        or str(embedding.get("profile") or "").strip()
+        or "bootstrap"
+    )
+    payload = profiles.get(selected)
+    if payload is None:
+        raise ValueError(f"Unknown embedding profile: {selected}")
+    resolved = copy.deepcopy(payload)
+    resolved["name"] = selected
+    return resolved
 
 
 def _resolve_workspace_root(

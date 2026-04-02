@@ -11,7 +11,14 @@ from unittest import mock
 
 from hep_rag_v2 import paths
 from hep_rag_v2.cli import build_parser
-from hep_rag_v2.config import apply_runtime_config, default_config, runtime_collection_config, save_config
+from hep_rag_v2.config import (
+    apply_runtime_config,
+    default_config,
+    resolve_embedding_profile,
+    resolve_mode,
+    runtime_collection_config,
+    save_config,
+)
 from hep_rag_v2.providers.local_transformers import LocalTransformersClient
 from hep_rag_v2.providers.inspire import build_search_query, list_pdf_candidates
 
@@ -63,6 +70,58 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(config["api"]["job_max_workers"], 2)
         self.assertEqual(config["api"]["job_max_events"], 1000)
         self.assertTrue(config["api"]["enable_ui"])
+        self.assertEqual(config["modes"]["build"], "full")
+        self.assertEqual(config["modes"]["retrieval"], "hybrid")
+        self.assertEqual(config["build"]["structure_backend"], "api_llm")
+        self.assertEqual(config["build"]["embedding_source"], "local_profile")
+        self.assertFalse(config["build"]["allow_silent_fallback"])
+        self.assertEqual(config["profiles"]["embedding"], "bootstrap")
+        self.assertEqual(config["embedding"]["profile"], "bootstrap")
+        self.assertFalse(config["embedding"]["allow_silent_fallback"])
+        self.assertEqual(config["embedding_profiles"]["semantic_small_local"]["runtime"]["device"], "cuda")
+
+    def test_resolve_mode_prefers_explicit_mode_blocks(self) -> None:
+        config = default_config()
+        self.assertEqual(resolve_mode(config, "build", default="missing"), "full")
+        self.assertEqual(resolve_mode(config, "retrieval", default="missing"), "hybrid")
+
+        config["modes"]["retrieval"] = "structure_only"
+        self.assertEqual(resolve_mode(config, "retrieval", default="missing"), "structure_only")
+
+    def test_resolve_embedding_profile_requires_explicit_profile_and_no_silent_fallback(self) -> None:
+        config = default_config()
+        config["profiles"]["embedding"] = "semantic_small_local"
+        resolved = resolve_embedding_profile(config)
+        self.assertEqual(resolved["name"], "semantic_small_local")
+        self.assertEqual(resolved["model"], "sentence-transformers:BAAI/bge-small-en-v1.5")
+        self.assertEqual(resolved["runtime"]["device"], "cuda")
+        self.assertGreaterEqual(int(resolved["runtime"]["batch_size"]), 16)
+
+        config["profiles"]["embedding"] = "does_not_exist"
+        with self.assertRaises(ValueError):
+            resolve_embedding_profile(config)
+
+    def test_save_and_load_round_trip_preserves_explicit_mode_and_profile_blocks(self) -> None:
+        original_root = paths.workspace_root()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                config_path = tmp_path / "hep-rag.yaml"
+                config = default_config(workspace_root=tmp_path / "workspace")
+                config["modes"]["retrieval"] = "structure_only"
+                config["profiles"]["embedding"] = "semantic_small_local"
+                config["build"]["allow_silent_fallback"] = False
+                save_config(config, config_path)
+
+                loaded_path, loaded = apply_runtime_config(config_path=config_path)
+
+                self.assertEqual(loaded_path, config_path.resolve())
+                self.assertEqual(loaded["modes"]["retrieval"], "structure_only")
+                self.assertEqual(loaded["profiles"]["embedding"], "semantic_small_local")
+                self.assertFalse(loaded["build"]["allow_silent_fallback"])
+                self.assertEqual(resolve_embedding_profile(loaded)["name"], "semantic_small_local")
+        finally:
+            paths.set_workspace_root(original_root)
 
     def test_build_search_query_only_appends_published_filter_when_requested(self) -> None:
         self.assertEqual(
