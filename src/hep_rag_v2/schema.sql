@@ -397,6 +397,54 @@ CREATE TABLE IF NOT EXISTS chunk_topic_mentions (
   FOREIGN KEY (topic_id) REFERENCES topics(topic_id)
 );
 
+CREATE TABLE IF NOT EXISTS work_capsules (
+  capsule_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL UNIQUE,
+  collection_id INTEGER,
+  profile TEXT NOT NULL DEFAULT 'default',
+  builder TEXT,
+  is_review INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  capsule_text TEXT NOT NULL,
+  result_signature_json TEXT NOT NULL DEFAULT '[]',
+  method_signature_json TEXT NOT NULL DEFAULT '[]',
+  anomaly_code TEXT,
+  anomaly_detail TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (work_id) REFERENCES works(work_id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id) REFERENCES collections(collection_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS pdg_sources (
+  source_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  manifest_path TEXT,
+  parsed_dir TEXT,
+  block_count INTEGER NOT NULL DEFAULT 0,
+  capsule_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pdg_sections (
+  pdg_section_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id TEXT NOT NULL,
+  parent_title TEXT,
+  title TEXT NOT NULL,
+  clean_title TEXT,
+  path_text TEXT,
+  section_kind TEXT NOT NULL DEFAULT 'body',
+  level INTEGER NOT NULL DEFAULT 1,
+  order_index INTEGER NOT NULL DEFAULT 0,
+  page_start INTEGER,
+  page_end INTEGER,
+  raw_text TEXT,
+  capsule_text TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (source_id) REFERENCES pdg_sources(source_id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_collections_name ON collections(name);
 CREATE INDEX IF NOT EXISTS idx_dirty_objects_lane ON dirty_objects(lane, object_kind, updated_at);
 CREATE INDEX IF NOT EXISTS idx_dirty_objects_collection ON dirty_objects(collection_id, lane);
@@ -418,5 +466,7 @@ CREATE INDEX IF NOT EXISTS idx_sections_document ON document_sections(document_i
 CREATE INDEX IF NOT EXISTS idx_blocks_document ON blocks(document_id);
 CREATE INDEX IF NOT EXISTS idx_formulas_document ON formulas(document_id);
 CREATE INDEX IF NOT EXISTS idx_assets_document ON assets(document_id);
+CREATE INDEX IF NOT EXISTS idx_work_capsules_collection ON work_capsules(collection_id, status);
+CREATE INDEX IF NOT EXISTS idx_pdg_sections_source ON pdg_sections(source_id, order_index);
 CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_work ON chunks(work_id);
