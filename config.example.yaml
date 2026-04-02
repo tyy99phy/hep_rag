@@ -1,5 +1,20 @@
+modes:
+  build: full          # 显式 build_mode；默认走完整建库流程
+  retrieval: hybrid    # 显式 retrieval_mode；不做 silent fallback
+
+profiles:
+  structure: default
+  embedding: semantic_small_local   # 显式 embedding_profile；默认语义建库走本地 embedding
+  pdg: default
+
 workspace:
   root: ./workspace
+
+build:
+  mode: full
+  structure_backend: api_llm      # 结构构建默认走 API 模型
+  embedding_source: local_profile # embedding 默认走本地 profile
+  allow_silent_fallback: false
 
 collection:
   name: default
@@ -58,12 +73,37 @@ mineru:
   timeout_sec: 120
 
 embedding:
-  model: hash-idf-v1
+  model: hash-idf-v1                # 兼容字段；真正使用哪个模型由 profiles.embedding 决定
   dim: 768
+  profile: semantic_small_local
   build_after_ingest: true
+  allow_silent_fallback: false
+  runtime:
+    device: cuda                    # 单张 3090 友好默认
+    batch_size: 64
   chroma:
     enabled: false
     dir: null
+
+embedding_profiles:
+  bootstrap:
+    model: hash-idf-v1
+    dim: 768
+    runtime:
+      device: cpu
+      batch_size: 32
+  semantic_small_local:
+    model: sentence-transformers:BAAI/bge-small-en-v1.5
+    dim: 384
+    runtime:
+      device: cuda
+      batch_size: 64
+  semantic_prod_local:
+    model: sentence-transformers:BAAI/bge-base-en-v1.5
+    dim: 768
+    runtime:
+      device: cuda
+      batch_size: 32
 
 ingest:
   chunk_size: 2400
@@ -71,6 +111,7 @@ ingest:
   section_parent_char_limit: 12000
 
 retrieval:
+  mode: hybrid
   target: auto
   limit: 8
   max_parallelism: 2
@@ -78,6 +119,13 @@ retrieval:
   seed_limit: 5
   chunk_limit: 12
   answer_evidence_limit: 6
+
+structure:
+  profile: default
+  builder: heuristic-v1
+  backend: api_llm
+  allow_silent_fallback: false
+  require_default_signatures: true   # 默认层非综述文章缺 result/method 签名时必须显式报异常/待补
 
 api:
   auth_token: ""

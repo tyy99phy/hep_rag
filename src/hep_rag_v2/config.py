@@ -69,6 +69,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "workspace": {
         "root": "./workspace",
     },
+    "build": {
+        "mode": "full",
+        "structure_backend": "api_llm",
+        "embedding_source": "local_profile",
+        "allow_silent_fallback": False,
+    },
     "collection": {
         "name": "default",
         "label": "Default HEP collection",
@@ -116,6 +122,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "dim": 768,
         "profile": "bootstrap",
         "build_after_ingest": True,
+        "allow_silent_fallback": False,
         "runtime": {
             "device": "cpu",
             "batch_size": 32,
@@ -137,6 +144,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "method_limit": 8,
         "profile": "default",
         "builder": "heuristic-v1",
+        "backend": "api_llm",
+        "allow_silent_fallback": False,
     },
     "pdg": {
         "profile": "default",
