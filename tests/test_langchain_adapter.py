@@ -12,6 +12,7 @@ from hep_rag_v2.integrations.langchain_adapter import (
     build_langchain_document_tool,
     build_langchain_graph_tool,
     build_langchain_answer_chain,
+    build_langchain_answer_tool,
     build_langchain_answer_runnable,
     build_langchain_retrieval_tool,
     build_langchain_toolkit,
@@ -75,6 +76,19 @@ class LangChainAdapterTests(unittest.TestCase):
         self.assertEqual(work_docs[0].metadata["source_type"], "work")
         self.assertEqual(work_docs[0].metadata["work_id"], 11)
         self.assertIn("vector boson scattering", work_docs[0].page_content)
+
+    def test_retrieval_to_documents_falls_back_to_works_when_chunks_missing(self) -> None:
+        docs = retrieval_to_documents(
+            {
+                **self.retrieval_payload,
+                "evidence_chunks": [],
+            }
+        )
+
+        self.assertEqual(len(docs), 1)
+        self.assertEqual(docs[0].metadata["source_type"], "work")
+        self.assertEqual(docs[0].metadata["work_id"], 11)
+        self.assertIn("vector boson scattering", docs[0].page_content)
 
     @mock.patch("hep_rag_v2.integrations.langchain_adapter.retrieve")
     def test_retriever_wraps_existing_pipeline(self, retrieve_mock: mock.Mock) -> None:
@@ -188,6 +202,73 @@ class LangChainAdapterTests(unittest.TestCase):
         answer = chain.invoke("CMS VBS SSWW")
 
         self.assertEqual(answer, "Plain answer")
+
+    @mock.patch("hep_rag_v2.integrations.langchain_adapter.ask")
+    def test_answer_tool_uses_existing_pipeline(self, ask_mock: mock.Mock) -> None:
+        ask_mock.return_value = {"query": "CMS VBS SSWW", "answer": "Structured answer"}
+
+        tool = build_langchain_answer_tool(
+            self.config,
+            collection_name="default",
+            target="works",
+            limit=2,
+            model="hash-idf-v1",
+            mode="survey",
+        )
+        payload = tool.invoke("CMS VBS SSWW")
+
+        self.assertEqual(payload["answer"], "Structured answer")
+        ask_mock.assert_called_once_with(
+            self.config,
+            query="CMS VBS SSWW",
+            mode="survey",
+            limit=2,
+            target="works",
+            collection_name="default",
+            model="hash-idf-v1",
+            progress=None,
+        )
+
+    @mock.patch("hep_rag_v2.integrations.langchain_adapter._build_llm_client")
+    @mock.patch("hep_rag_v2.integrations.langchain_adapter.retrieve")
+    def test_answer_runnable_accepts_string_input_and_falls_back_to_work_documents(
+        self,
+        retrieve_mock: mock.Mock,
+        build_client_mock: mock.Mock,
+    ) -> None:
+        retrieve_mock.return_value = {
+            **self.retrieval_payload,
+            "evidence_chunks": [],
+        }
+        client = mock.Mock()
+        client.chat.return_value = {
+            "model": "gpt-5.4",
+            "content": "Fallback answer",
+            "raw": {"id": "resp-4"},
+        }
+        build_client_mock.return_value = client
+
+        runnable = build_langchain_answer_runnable(
+            self.config,
+            collection_name="default",
+            target="works",
+            limit=2,
+            model="hash-idf-v1",
+            mode="survey",
+        )
+        payload = runnable.invoke("CMS VBS SSWW")
+
+        self.assertEqual(payload["answer"], "Fallback answer")
+        self.assertEqual(payload["documents"][0].metadata["source_type"], "work")
+        retrieve_mock.assert_called_once_with(
+            self.config,
+            query="CMS VBS SSWW",
+            limit=2,
+            target="works",
+            collection_name="default",
+            model="hash-idf-v1",
+            progress=None,
+        )
 
     @mock.patch("hep_rag_v2.integrations.langchain_adapter.retrieve")
     def test_retrieval_tool_uses_existing_pipeline(self, retrieve_mock: mock.Mock) -> None:

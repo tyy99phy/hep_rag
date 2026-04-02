@@ -3,11 +3,20 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.graph import rebuild_graph_edges
+from hep_rag_v2.maintenance import (
+    clear_dirty_work_ids,
+    dirty_counts,
+    finish_maintenance_job,
+    select_dirty_work_ids,
+    start_maintenance_job,
+)
 from hep_rag_v2.search import (
     rebuild_search_indices,
+    search_index_counts,
     search_assets_bm25,
     search_chunks_bm25,
     search_formulas_bm25,
@@ -33,7 +42,6 @@ from ._common import emit_cli_status
 
 def cmd_build_search_index(args: argparse.Namespace) -> None:
     ensure_db()
-    from hep_rag_v2.search import search_index_counts
 
     with connect() as conn:
         emit_cli_status(f"building BM25 search indexes for target={args.target}...")
@@ -214,3 +222,192 @@ def cmd_show_graph(args: argparse.Namespace) -> None:
         similarity_model=args.model if args.edge_kind == "similarity" else None,
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def cmd_sync_search(args: argparse.Namespace) -> None:
+    summary = _run_sync_job(lane="search", args=args, rebuild=lambda conn: _sync_search_impl(conn, args))
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def cmd_sync_vectors(args: argparse.Namespace) -> None:
+    summary = _run_sync_job(lane="vectors", args=args, rebuild=lambda conn: _sync_vectors_impl(conn, args))
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def cmd_sync_graph(args: argparse.Namespace) -> None:
+    summary = _run_sync_job(lane="graph", args=args, rebuild=lambda conn: _sync_graph_impl(conn, args))
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def _sync_search_impl(conn, args: argparse.Namespace) -> dict[str, Any]:
+    emit_cli_status(
+        f"syncing BM25 search indexes for target={args.target} (scope={_sync_scope(args)})..."
+    )
+    summary = rebuild_search_indices(conn, target=args.target)
+    summary.update(search_index_counts(conn))
+    emit_cli_status("BM25 search sync finished.")
+    return summary
+
+
+def _sync_vectors_impl(conn, args: argparse.Namespace) -> dict[str, Any]:
+    emit_cli_status(
+        f"syncing vector indexes for target={args.target} with model={args.model} (scope={_sync_scope(args)})..."
+    )
+    summary = rebuild_vector_indices(
+        conn,
+        target=args.target,
+        model=args.model,
+        dim=args.dim,
+        progress=emit_cli_status,
+    )
+    summary.update(vector_index_counts(conn))
+    emit_cli_status("vector sync finished.")
+    return summary
+
+
+def _sync_graph_impl(conn, args: argparse.Namespace) -> dict[str, Any]:
+    emit_cli_status(
+        f"syncing graph edges for target={args.target} (scope={_sync_scope(args)})..."
+    )
+    summary = rebuild_graph_edges(
+        conn,
+        target=args.target,
+        collection=args.collection,
+        min_shared=args.min_shared,
+        similarity_model=args.model,
+        similarity_top_k=args.top_k,
+        similarity_min_score=args.min_score,
+        progress=emit_cli_status,
+    )
+    emit_cli_status("graph sync finished.")
+    return summary
+
+
+def _run_sync_job(
+    *,
+    lane: str,
+    args: argparse.Namespace,
+    rebuild,
+) -> dict[str, Any]:
+    ensure_db()
+    scope = _sync_scope(args)
+    collection = _sync_collection(args)
+    updated_since = _sync_updated_since(args)
+    try:
+        with connect() as conn:
+            selected_dirty = (
+                select_dirty_work_ids(
+                    conn,
+                    lane=lane,
+                    collection=collection,
+                    updated_since=updated_since,
+                )
+                if scope == "dirty"
+                else []
+            )
+            dirty_before = dirty_counts(conn, collection=collection)
+            job_id = start_maintenance_job(
+                conn,
+                lane=lane,
+                scope=scope,
+                collection_name=collection,
+                updated_since=updated_since,
+                details=_sync_job_details(args, selected_dirty),
+            )
+
+            if scope == "dirty" and not selected_dirty:
+                summary = _sync_noop_summary(
+                    lane=lane,
+                    args=args,
+                    scope=scope,
+                    collection=collection,
+                    updated_since=updated_since,
+                    job_id=job_id,
+                    dirty_before=dirty_before,
+                )
+                finish_maintenance_job(conn, job_id=job_id, status="completed", result=summary)
+                conn.commit()
+                return summary
+
+            summary = rebuild(conn)
+            cleared_dirty = clear_dirty_work_ids(
+                conn,
+                lane=lane,
+                collection=collection,
+                work_ids=selected_dirty if scope == "dirty" else None,
+            )
+            after_dirty = dirty_counts(conn, collection=collection)
+            summary.update(
+                {
+                    "lane": lane,
+                    "scope": scope,
+                    "collection": collection,
+                    "updated_since": updated_since,
+                    "selected_dirty_count": len(selected_dirty),
+                    "selected_dirty_work_ids": selected_dirty,
+                    "cleared_dirty_count": cleared_dirty,
+                    "dirty_before": dirty_before,
+                    "dirty_after": after_dirty,
+                    "maintenance_job_id": job_id,
+                }
+            )
+            finish_maintenance_job(conn, job_id=job_id, status="completed", result=summary)
+            conn.commit()
+            return summary
+    except (RuntimeError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _sync_job_details(args: argparse.Namespace, selected_dirty: list[int]) -> dict[str, Any]:
+    return {
+        "target": getattr(args, "target", None),
+        "model": getattr(args, "model", None),
+        "dim": getattr(args, "dim", None),
+        "collection": _sync_collection(args),
+        "updated_since": _sync_updated_since(args),
+        "selected_dirty_count": len(selected_dirty),
+        "selected_dirty_work_ids": selected_dirty,
+    }
+
+
+def _sync_noop_summary(
+    *,
+    lane: str,
+    args: argparse.Namespace,
+    scope: str,
+    collection: str | None,
+    updated_since: str | None,
+    job_id: int,
+    dirty_before: dict[str, int],
+) -> dict[str, Any]:
+    return {
+        "lane": lane,
+        "target": getattr(args, "target", None),
+        "scope": scope,
+        "collection": collection,
+        "updated_since": updated_since,
+        "selected_dirty_count": 0,
+        "selected_dirty_work_ids": [],
+        "cleared_dirty_count": 0,
+        "dirty_before": dirty_before,
+        "dirty_after": dirty_before,
+        "maintenance_job_id": job_id,
+        "skipped": True,
+        "reason": "no dirty work ids matched the requested scope",
+    }
+
+
+def _sync_scope(args: argparse.Namespace) -> str:
+    return str(getattr(args, "scope", "dirty") or "dirty")
+
+
+def _sync_collection(args: argparse.Namespace) -> str | None:
+    value = getattr(args, "collection", None)
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _sync_updated_since(args: argparse.Namespace) -> str | None:
+    value = getattr(args, "updated_since", None)
+    text = str(value).strip() if value is not None else ""
+    return text or None

@@ -16,7 +16,8 @@ from pydantic import BaseModel, Field
 
 from hep_rag_v2 import paths
 from hep_rag_v2.config import apply_runtime_config, default_config
-from hep_rag_v2.pipeline import ask, fetch_online_candidates, ingest_online, reparse_cached_pdfs, retrieve
+from hep_rag_v2.pipeline import fetch_online_candidates, ingest_online, reparse_cached_pdfs
+from hep_rag_v2.service import create_facade
 from hep_rag_v2.service.inspect import audit_document_payload, show_document_payload, show_graph_payload
 from hep_rag_v2.service.workspace import workspace_status_payload
 
@@ -83,6 +84,20 @@ class ReparseJobRequest(BaseModel):
     replace_existing: bool = False
     skip_index: bool = False
     skip_graph: bool = False
+
+
+
+
+def retrieve(config: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    return create_facade(config).retrieve(**kwargs)
+
+
+def ask(config: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    return create_facade(config).ask(**kwargs)
+
+
+def _drop_none_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in kwargs.items() if value is not None}
 
 
 def create_app(
@@ -210,9 +225,13 @@ def create_app(
         return _wrap_service_call(
             lambda: fetch_online_candidates(
                 config,
-                query=body.query,
-                limit=body.limit,
-                max_parallelism=body.max_parallelism,
+                **_drop_none_kwargs(
+                    {
+                        "query": body.query,
+                        "limit": body.limit,
+                        "max_parallelism": body.max_parallelism,
+                    }
+                ),
             )
         )
 
@@ -266,20 +285,21 @@ def create_app(
 
         def _run() -> dict[str, Any]:
             _, config = _load_runtime_config(request.app)
-            return ingest_online(
-                config,
-                query=body.query,
-                limit=body.limit,
-                collection_name=body.collection_name,
-                max_parallelism=body.max_parallelism,
-                download_limit=body.download_limit,
-                parse_limit=body.parse_limit,
-                replace_existing=body.replace_existing,
-                skip_parse=body.skip_parse,
-                skip_index=body.skip_index,
-                skip_graph=body.skip_graph,
-                progress=job_manager.progress_callback(job_id),
-            )
+            kwargs = {
+                "query": body.query,
+                "limit": body.limit,
+                "collection_name": body.collection_name,
+                "download_limit": body.download_limit,
+                "parse_limit": body.parse_limit,
+                "replace_existing": body.replace_existing,
+                "skip_parse": body.skip_parse,
+                "skip_index": body.skip_index,
+                "skip_graph": body.skip_graph,
+                "progress": job_manager.progress_callback(job_id),
+            }
+            if body.max_parallelism is not None:
+                kwargs["max_parallelism"] = body.max_parallelism
+            return ingest_online(config, **kwargs)
 
         try:
             return job_manager.submit(

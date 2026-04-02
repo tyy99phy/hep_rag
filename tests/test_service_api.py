@@ -82,26 +82,45 @@ class ApiLayerTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 tmp = Path(td)
                 app = create_app(config_loader=_api_config_loader(tmp))
-                with TestClient(app) as client, mock.patch("hep_rag_v2.api.app.retrieve", return_value={"query": "q", "works": []}) as retrieve_mock:
+                facade = mock.Mock()
+                facade.retrieve.return_value = {"query": "q", "works": [], "typed_retrieval": {"primary": []}}
+                with TestClient(app) as client, mock.patch(
+                    "hep_rag_v2.api.app.create_facade",
+                    return_value=facade,
+                ) as create_facade_mock:
                     response = client.post("/retrieve", json={"query": "q", "limit": 3, "target": "works"})
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json()["query"], "q")
-                    retrieve_mock.assert_called_once_with(
-                        mock.ANY,
+                    create_facade_mock.assert_called_once_with(mock.ANY)
+                    facade.retrieve.assert_called_once_with(
                         query="q",
                         limit=3,
                         target="works",
                         collection_name=None,
+                        max_parallelism=None,
                         model=None,
                     )
-                    config = retrieve_mock.call_args.args[0]
+                    config = create_facade_mock.call_args.args[0]
                     self.assertFalse(config["llm"]["enabled"])
                     self.assertEqual(Path(config["workspace"]["root"]), (tmp / "workspace").resolve())
         finally:
             paths.set_workspace_root(original_root)
 
     def test_ingest_job_endpoint_records_progress_and_result(self) -> None:
-        def _fake_ingest(config, *, query, limit, collection_name, download_limit, parse_limit, replace_existing, skip_parse, skip_index, skip_graph, progress):
+        def _fake_ingest(
+            config,
+            *,
+            query,
+            limit,
+            collection_name,
+            download_limit=None,
+            parse_limit=None,
+            replace_existing,
+            skip_parse,
+            skip_index,
+            skip_graph,
+            progress,
+        ):
             progress("searching INSPIRE...")
             progress("downloading PDFs...")
             return {
@@ -148,7 +167,12 @@ class ApiLayerTests(unittest.TestCase):
                         {"api": {"auth_token": "secret-token"}},
                     )
                 )
-                with TestClient(app) as client, mock.patch("hep_rag_v2.api.app.retrieve", return_value={"query": "q", "works": []}) as retrieve_mock:
+                facade = mock.Mock()
+                facade.retrieve.return_value = {"query": "q", "works": [], "typed_retrieval": {"primary": []}}
+                with TestClient(app) as client, mock.patch(
+                    "hep_rag_v2.api.app.create_facade",
+                    return_value=facade,
+                ) as create_facade_mock:
                     response = client.get("/")
                     self.assertEqual(response.status_code, 200)
 
@@ -170,12 +194,26 @@ class ApiLayerTests(unittest.TestCase):
                     )
                     self.assertEqual(authorized.status_code, 200)
                     self.assertEqual(authorized.json()["query"], "q")
-                    retrieve_mock.assert_called_once()
+                    create_facade_mock.assert_called_once()
+                    facade.retrieve.assert_called_once()
         finally:
             paths.set_workspace_root(original_root)
 
     def test_job_history_persists_across_app_recreation(self) -> None:
-        def _fake_ingest(config, *, query, limit, collection_name, download_limit, parse_limit, replace_existing, skip_parse, skip_index, skip_graph, progress):
+        def _fake_ingest(
+            config,
+            *,
+            query,
+            limit,
+            collection_name,
+            download_limit=None,
+            parse_limit=None,
+            replace_existing,
+            skip_parse,
+            skip_index,
+            skip_graph,
+            progress,
+        ):
             progress("searching INSPIRE...")
             return {"query": query, "collection": collection_name or "default", "ok": True}
 
@@ -205,7 +243,20 @@ class ApiLayerTests(unittest.TestCase):
             paths.set_workspace_root(original_root)
 
     def test_progress_events_do_not_fail_job_when_main_db_is_write_locked(self) -> None:
-        def _fake_ingest(config, *, query, limit, collection_name, download_limit, parse_limit, replace_existing, skip_parse, skip_index, skip_graph, progress):
+        def _fake_ingest(
+            config,
+            *,
+            query,
+            limit,
+            collection_name,
+            download_limit=None,
+            parse_limit=None,
+            replace_existing,
+            skip_parse,
+            skip_index,
+            skip_graph,
+            progress,
+        ):
             with db.connect() as conn:
                 conn.execute("CREATE TABLE IF NOT EXISTS lock_test (id INTEGER PRIMARY KEY, value TEXT)")
                 conn.execute("INSERT INTO lock_test (value) VALUES (?)", ("locked",))

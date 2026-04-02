@@ -14,6 +14,7 @@ from hep_rag_v2.config import runtime_collection_config
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.fulltext import import_mineru_source, materialize_mineru_document
 from hep_rag_v2.graph import rebuild_graph_edges
+from hep_rag_v2.maintenance import dirty_counts, mark_work_dirty
 from hep_rag_v2.metadata import (
     canonical_identity,
     expand_work_ids_with_family,
@@ -78,6 +79,37 @@ HEP_COLLABORATIONS = (
 )
 HEP_ENERGY_PATTERN = re.compile(r"\b(\d+(?:\.\d+)?)\s*TEV\b", re.IGNORECASE)
 TITLE_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+
+
+def _queue_derived_maintenance(
+    conn: sqlite3.Connection,
+    *,
+    collection_id: int,
+    collection_name: str,
+    work_ids: list[int],
+    reason: str,
+) -> dict[str, Any]:
+    normalized_work_ids = sorted({int(work_id) for work_id in work_ids})
+    if not normalized_work_ids:
+        return {
+            "queued": False,
+            "collection": collection_name,
+            "work_ids": [],
+            "dirty": dirty_counts(conn, collection=collection_name),
+        }
+    marked = mark_work_dirty(
+        conn,
+        work_ids=normalized_work_ids,
+        collection_id=collection_id,
+        reason=reason,
+    )
+    return {
+        "queued": True,
+        "collection": collection_name,
+        "work_ids": normalized_work_ids,
+        "marked": marked,
+        "dirty": dirty_counts(conn, collection=collection_name),
+    }
 TITLE_TOKEN_STOPWORDS = {
     "a",
     "an",
@@ -1097,6 +1129,7 @@ def ingest_online(
         "search": None,
         "vectors": None,
         "graph": None,
+        "maintenance": None,
     }
 
     mineru_client = _build_mineru_client(config)
@@ -1121,6 +1154,7 @@ def ingest_online(
             # Phase 1: Metadata upsert (sequential, in DB transaction)
             _emit_progress(progress, f"ingesting metadata for {len(hits)} paper families...")
             download_tasks: list[dict[str, Any]] = []
+            touched_work_ids: set[int] = set()
             for hit in hits:
                 family_hits = [hit, *(hit.get("_family_members") or [])]
                 for family_hit in family_hits:
@@ -1128,10 +1162,14 @@ def ingest_online(
                     summary["metadata"]["created"] += int(stats["created"])
                     summary["metadata"]["updated"] += int(stats["updated"])
                     summary["metadata"]["citations_written"] += int(stats["citations_written"])
+                    family_work_id = _find_work_id_for_hit(conn, family_hit)
+                    if family_work_id is not None:
+                        touched_work_ids.add(int(family_work_id))
 
                 work_id = _find_work_id_for_hit(conn, hit)
                 if work_id is None:
                     continue
+                touched_work_ids.add(int(work_id))
 
                 if len(download_tasks) >= download_cap:
                     continue
@@ -1236,6 +1274,7 @@ def ingest_online(
                     )
                     summary["mineru"]["materialized"] += 1
                     summary["mineru"]["items"].append(parsed)
+                    touched_work_ids.add(int(pdf_info["work_id"]))
                     _emit_progress(
                         progress,
                         f"finished MinerU parse for {label} state={parsed.get('state') or 'materialized'}",
@@ -1268,38 +1307,21 @@ def ingest_online(
                     f"{summary['mineru']['failed']} failed.",
                 )
 
-            if not skip_index:
-                _emit_progress(progress, "building BM25 search indexes...")
-                summary["search"] = rebuild_search_indices(conn, target="all")
-                _emit_progress(progress, "BM25 search indexes ready.")
-                if bool(embedding_cfg.get("build_after_ingest", True)):
-                    try:
-                        _emit_progress(progress, "building vector indexes...")
-                        summary["vectors"] = rebuild_vector_indices(
-                            conn,
-                            target="all",
-                            model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
-                            dim=int(embedding_cfg.get("dim") or 768),
-                            progress=progress,
-                        )
-                        _emit_progress(progress, "vector indexes ready.")
-                    except Exception as exc:
-                        summary["vectors"] = {"ok": False, "error": str(exc)}
-                        _emit_progress(progress, f"vector index build failed: {_truncate_progress_text(exc, limit=160)}")
-            if not skip_graph:
-                try:
-                    _emit_progress(progress, "building graph edges...")
-                    summary["graph"] = rebuild_graph_edges(
-                        conn,
-                        target="all",
-                        collection=collection_payload["name"],
-                        similarity_model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
-                        progress=progress,
-                    )
-                    _emit_progress(progress, "graph edges ready.")
-                except Exception as exc:
-                    summary["graph"] = {"ok": False, "error": str(exc)}
-                    _emit_progress(progress, f"graph build failed: {_truncate_progress_text(exc, limit=160)}")
+            summary["maintenance"] = _queue_derived_maintenance(
+                conn,
+                collection_id=collection_id,
+                collection_name=collection_payload["name"],
+                work_ids=sorted(touched_work_ids),
+                reason="ingest_online",
+            )
+            if summary["maintenance"]["queued"]:
+                _emit_progress(
+                    progress,
+                    "queued maintenance instead of auto rebuild: "
+                    f"{summary['maintenance']['dirty']}",
+                )
+            if skip_index or skip_graph:
+                _emit_progress(progress, "legacy skip-index/skip-graph flags are now no-op because ingest no longer auto rebuilds derived lanes.")
 
             _finish_ingest_run(
                 conn,
@@ -1361,9 +1383,15 @@ def reparse_cached_pdfs(
         "search": None,
         "vectors": None,
         "graph": None,
+        "maintenance": None,
     }
 
     with connect() as conn:
+        collection_row = conn.execute(
+            "SELECT collection_id FROM collections WHERE name = ?",
+            (collection_payload["name"],),
+        ).fetchone()
+        collection_id = int(collection_row["collection_id"]) if collection_row is not None else upsert_collection(conn, collection_payload)
         candidates = _select_reparse_candidates(
             conn,
             collection_name=collection_payload["name"],
@@ -1372,10 +1400,12 @@ def reparse_cached_pdfs(
             replace_existing=replace_existing,
         )
         summary["candidates_seen"] = len(candidates)
+        touched_work_ids: set[int] = set()
         if candidates:
             _emit_progress(progress, f"reparsing {len(candidates)} cached PDFs with MinerU...")
         for idx, candidate in enumerate(candidates, start=1):
             summary["attempted"] += 1
+            touched_work_ids.add(int(candidate["work_id"]))
             label = _paper_progress_label(
                 index=idx,
                 total=len(candidates),
@@ -1396,6 +1426,7 @@ def reparse_cached_pdfs(
                 )
                 summary["materialized"] += 1
                 summary["items"].append(parsed)
+                touched_work_ids.add(int(candidate["work_id"]))
                 _emit_progress(
                     progress,
                     f"finished MinerU reparse for {label} state={parsed.get('state') or 'materialized'}",
@@ -1428,38 +1459,21 @@ def reparse_cached_pdfs(
                 f"{summary['failed']} failed.",
             )
 
-        if not skip_index and summary["materialized"] > 0:
-            _emit_progress(progress, "building BM25 search indexes...")
-            summary["search"] = rebuild_search_indices(conn, target="all")
-            _emit_progress(progress, "BM25 search indexes ready.")
-            if bool(embedding_cfg.get("build_after_ingest", True)):
-                try:
-                    _emit_progress(progress, "building vector indexes...")
-                    summary["vectors"] = rebuild_vector_indices(
-                        conn,
-                        target="all",
-                        model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
-                        dim=int(embedding_cfg.get("dim") or 768),
-                        progress=progress,
-                    )
-                    _emit_progress(progress, "vector indexes ready.")
-                except Exception as exc:
-                    summary["vectors"] = {"ok": False, "error": str(exc)}
-                    _emit_progress(progress, f"vector index build failed: {_truncate_progress_text(exc, limit=160)}")
-        if not skip_graph and summary["materialized"] > 0:
-            try:
-                _emit_progress(progress, "building graph edges...")
-                summary["graph"] = rebuild_graph_edges(
-                    conn,
-                    target="all",
-                    collection=collection_payload["name"],
-                    similarity_model=str(embedding_cfg.get("model") or DEFAULT_VECTOR_MODEL),
-                    progress=progress,
-                )
-                _emit_progress(progress, "graph edges ready.")
-            except Exception as exc:
-                summary["graph"] = {"ok": False, "error": str(exc)}
-                _emit_progress(progress, f"graph build failed: {_truncate_progress_text(exc, limit=160)}")
+        summary["maintenance"] = _queue_derived_maintenance(
+            conn,
+            collection_id=collection_id,
+            collection_name=collection_payload["name"],
+            work_ids=sorted(touched_work_ids),
+            reason="reparse_cached_pdfs",
+        )
+        if summary["maintenance"]["queued"]:
+            _emit_progress(
+                progress,
+                "queued maintenance instead of auto rebuild: "
+                f"{summary['maintenance']['dirty']}",
+            )
+        if skip_index or skip_graph:
+            _emit_progress(progress, "legacy skip-index/skip-graph flags are now no-op because reparse no longer auto rebuilds derived lanes.")
 
         summary["snapshot"] = _snapshot(conn)
     return summary

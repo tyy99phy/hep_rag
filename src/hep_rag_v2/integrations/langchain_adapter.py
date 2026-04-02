@@ -22,6 +22,7 @@ from pydantic import ConfigDict, Field, PrivateAttr
 
 from hep_rag_v2.config import apply_runtime_config
 from hep_rag_v2.pipeline import _build_answer_messages, _build_llm_client, ask, retrieve
+from hep_rag_v2.retrieval_adapter import TypedRetrievalItem, normalize_retrieval_payload
 from hep_rag_v2.service.inspect import audit_document_payload, show_document_payload, show_graph_payload
 
 ProgressCallback = Callable[[str], None] | None
@@ -40,11 +41,9 @@ def retrieval_to_documents(
     *,
     prefer_chunks: bool = True,
 ) -> list[Document]:
-    if prefer_chunks:
-        chunk_docs = [_chunk_to_document(item) for item in list(payload.get("evidence_chunks") or [])]
-        if chunk_docs:
-            return chunk_docs
-    return [_work_to_document(item) for item in list(payload.get("works") or [])]
+    typed = normalize_retrieval_payload(payload)
+    items = typed.primary_items(prefer_chunks=prefer_chunks)
+    return [_typed_item_to_document(item) for item in items]
 
 
 class HepRagRetriever(BaseRetriever):
@@ -433,49 +432,20 @@ def build_langchain_answer_chain(
     ) | RunnableLambda(lambda item: item["answer"])
 
 
-def _chunk_to_document(item: Mapping[str, Any]) -> Document:
+def _typed_item_to_document(item: TypedRetrievalItem) -> Document:
     metadata = {
-        "source_type": "chunk",
-        "chunk_id": item.get("chunk_id"),
-        "work_id": item.get("work_id"),
-        "family_id": item.get("family_id"),
-        "family_member_role": item.get("family_member_role"),
-        "section_hint": item.get("section_hint"),
-        "chunk_role": item.get("chunk_role"),
-        "canonical_source": item.get("canonical_source"),
-        "canonical_id": item.get("canonical_id"),
-        "title": item.get("raw_title"),
-        "score": item.get("hybrid_score", item.get("score")),
-        "rank": item.get("rank"),
+        "source_type": item.source_type,
+        "work_id": item.work_id,
+        "chunk_id": item.chunk_id,
+        "title": item.title,
+        "score": item.score,
+        "rank": item.rank,
     }
-    content = str(item.get("clean_text") or "").strip()
-    if not content:
-        content = str(item.get("raw_title") or "").strip()
-    return Document(page_content=content, metadata=_drop_none(metadata))
-
-
-def _work_to_document(item: Mapping[str, Any]) -> Document:
-    content_parts = [
-        str(item.get("raw_title") or "").strip(),
-        str(item.get("abstract") or "").strip(),
-    ]
-    metadata = {
-        "source_type": "work",
-        "work_id": item.get("work_id"),
-        "family_id": item.get("family_id"),
-        "family_member_role": item.get("family_member_role"),
-        "family_size": item.get("family_size"),
-        "canonical_source": item.get("canonical_source"),
-        "canonical_id": item.get("canonical_id"),
-        "title": item.get("raw_title"),
-        "year": item.get("year"),
-        "score": item.get("hybrid_score", item.get("score")),
-        "rank": item.get("rank"),
-    }
-    return Document(
-        page_content="\n\n".join(part for part in content_parts if part),
-        metadata=_drop_none(metadata),
-    )
+    if hasattr(item.metadata, "to_payload"):
+        metadata.update(item.metadata.to_payload())
+    else:
+        metadata.update(item.metadata)
+    return Document(page_content=item.content, metadata=_drop_none(metadata))
 
 
 def _drop_none(data: Mapping[str, Any]) -> dict[str, Any]:

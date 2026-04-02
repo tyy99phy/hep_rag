@@ -30,6 +30,9 @@ from .search import (
     cmd_search_vector,
     cmd_show_graph,
     cmd_sync_chroma_index,
+    cmd_sync_graph,
+    cmd_sync_search,
+    cmd_sync_vectors,
 )
 from .workspace import (
     cmd_collections,
@@ -141,6 +144,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--target", choices=["all", "works", "chunks", "formulas", "assets", "structure"], default="all")
     s.set_defaults(func=cmd_build_search_index)
 
+    s = sub.add_parser("sync-search", help="Incrementally sync SQLite FTS5 BM25 search indices")
+    s.add_argument("--target", choices=["all", "works", "chunks", "formulas", "assets", "structure"], default="all")
+    s.add_argument("--scope", choices=["all", "dirty"], default="dirty")
+    s.add_argument("--collection", default=None)
+    s.add_argument("--updated-since", default=None)
+    s.set_defaults(func=cmd_sync_search)
+
     s = sub.add_parser("search-bm25", help="Search works, chunks, formulas, or assets with SQLite FTS5 BM25")
     s.add_argument("query")
     s.add_argument("--target", choices=["works", "chunks", "formulas", "assets"], default="works")
@@ -153,6 +163,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
     s.add_argument("--dim", type=int, default=768)
     s.set_defaults(func=cmd_build_vector_index)
+
+    s = sub.add_parser("sync-vectors", help="Incrementally sync local vector indices")
+    s.add_argument("--target", choices=["all", "works", "chunks"], default="all")
+    s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
+    s.add_argument("--dim", type=int, default=768)
+    s.add_argument("--scope", choices=["all", "dirty"], default="dirty")
+    s.add_argument("--collection", default=None)
+    s.add_argument("--updated-since", default=None)
+    s.set_defaults(func=cmd_sync_vectors)
 
     s = sub.add_parser("sync-chroma-index", help="Mirror local vector indices into an optional Chroma vector store")
     s.add_argument("--target", choices=["all", "works", "chunks"], default="all")
@@ -202,6 +221,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--top-k", type=int, default=10)
     s.add_argument("--min-score", type=float, default=0.35)
     s.set_defaults(func=cmd_build_graph)
+
+    s = sub.add_parser("sync-graph", help="Incrementally sync graph edges")
+    s.add_argument("--target", choices=["all", "bibliographic-coupling", "co-citation", "similarity"], default="all")
+    s.add_argument("--min-shared", type=int, default=2)
+    s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
+    s.add_argument("--top-k", type=int, default=10)
+    s.add_argument("--min-score", type=float, default=0.35)
+    s.add_argument("--scope", choices=["all", "dirty"], default="dirty")
+    s.add_argument("--collection", default=None)
+    s.add_argument("--updated-since", default=None)
+    s.set_defaults(func=cmd_sync_graph)
 
     s = sub.add_parser("show-graph", help="Inspect graph neighbors for a work")
     s.add_argument("--work-id", type=int, default=None)

@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 
 from hep_rag_v2 import paths
+from hep_rag_v2.maintenance import ensure_maintenance_schema
 
 
 @contextmanager
@@ -40,6 +41,7 @@ def ensure_db() -> None:
     schema = paths.SCHEMA_PATH.read_text(encoding="utf-8")
     with closing(sqlite3.connect(paths.DB_PATH)) as conn:
         conn.executescript(schema)
+        ensure_maintenance_schema(conn)
         _ensure_schema_upgrades(conn)
         conn.commit()
 

@@ -39,6 +39,33 @@ CREATE TABLE IF NOT EXISTS graph_build_runs (
   finished_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS dirty_objects (
+  dirty_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lane TEXT NOT NULL,
+  object_kind TEXT NOT NULL,
+  object_id INTEGER NOT NULL,
+  collection_id INTEGER,
+  reason TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(lane, object_kind, object_id),
+  FOREIGN KEY (collection_id) REFERENCES collections(collection_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_jobs (
+  job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lane TEXT NOT NULL,
+  status TEXT NOT NULL,
+  scope TEXT,
+  collection_name TEXT,
+  updated_since TEXT,
+  details_json TEXT,
+  requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  finished_at TEXT,
+  result_json TEXT
+);
+
 CREATE TABLE IF NOT EXISTS works (
   work_id INTEGER PRIMARY KEY AUTOINCREMENT,
   canonical_source TEXT NOT NULL,
@@ -371,6 +398,9 @@ CREATE TABLE IF NOT EXISTS chunk_topic_mentions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_collections_name ON collections(name);
+CREATE INDEX IF NOT EXISTS idx_dirty_objects_lane ON dirty_objects(lane, object_kind, updated_at);
+CREATE INDEX IF NOT EXISTS idx_dirty_objects_collection ON dirty_objects(collection_id, lane);
+CREATE INDEX IF NOT EXISTS idx_maintenance_jobs_lane ON maintenance_jobs(lane, status, requested_at);
 CREATE INDEX IF NOT EXISTS idx_works_year ON works(year);
 CREATE INDEX IF NOT EXISTS idx_works_title ON works(title);
 CREATE INDEX IF NOT EXISTS idx_work_ids_work ON work_ids(work_id);

@@ -1,3 +1,5 @@
+from .facade import HepRagServiceFacade
+from .factory import create_facade, create_tool_registry
 from .inspect import (
     AUDIT_PATTERNS,
     READINESS_THRESHOLDS,
@@ -9,6 +11,9 @@ from .inspect import (
 from .workspace import workspace_status_payload
 
 __all__ = [
+    "HepRagServiceFacade",
+    "create_facade",
+    "create_tool_registry",
     "AUDIT_PATTERNS",
     "READINESS_THRESHOLDS",
     "audit_document_payload",

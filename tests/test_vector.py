@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -32,6 +33,45 @@ from hep_rag_v2.vector import (
 
 
 class TestVectorSearch(unittest.TestCase):
+    def test_parser_source_declares_explicit_sync_commands(self) -> None:
+        source = (SRC / "hep_rag_v2" / "cli" / "_parser.py").read_text(encoding="utf-8")
+
+        self.assertIn('sub.add_parser("sync-search"', source)
+        self.assertIn('sub.add_parser("sync-vectors"', source)
+        self.assertIn('sub.add_parser("sync-graph"', source)
+        self.assertIn("s.set_defaults(func=cmd_sync_search)", source)
+        self.assertIn("s.set_defaults(func=cmd_sync_vectors)", source)
+        self.assertIn("s.set_defaults(func=cmd_sync_graph)", source)
+
+    def test_parser_source_declares_sync_scope_and_filter_arguments(self) -> None:
+        source = (SRC / "hep_rag_v2" / "cli" / "_parser.py").read_text(encoding="utf-8")
+
+        self.assertGreaterEqual(source.count('s.add_argument("--scope", choices=["all", "dirty"], default="dirty")'), 3)
+        self.assertGreaterEqual(source.count('s.add_argument("--collection", default=None)'), 3)
+        self.assertGreaterEqual(source.count('s.add_argument("--updated-since", default=None)'), 3)
+
+    def test_sync_search_handler_exists_in_source(self) -> None:
+        source = (SRC / "hep_rag_v2" / "cli" / "search.py").read_text(encoding="utf-8")
+        self.assertIn("def cmd_sync_search(args: argparse.Namespace) -> None:", source)
+
+    def test_sync_vectors_handler_exists_in_source(self) -> None:
+        source = (SRC / "hep_rag_v2" / "cli" / "search.py").read_text(encoding="utf-8")
+        self.assertIn("def cmd_sync_vectors(args: argparse.Namespace) -> None:", source)
+
+    def test_sync_graph_handler_exists_in_source(self) -> None:
+        source = (SRC / "hep_rag_v2" / "cli" / "search.py").read_text(encoding="utf-8")
+        self.assertIn("def cmd_sync_graph(args: argparse.Namespace) -> None:", source)
+
+    def test_sync_source_uses_maintenance_interfaces(self) -> None:
+        source = (SRC / "hep_rag_v2" / "cli" / "search.py").read_text(encoding="utf-8")
+
+        self.assertIn("from hep_rag_v2.maintenance import (", source)
+        self.assertIn("select_dirty_work_ids", source)
+        self.assertIn("clear_dirty_work_ids", source)
+        self.assertIn("dirty_counts", source)
+        self.assertIn("start_maintenance_job", source)
+        self.assertIn("finish_maintenance_job", source)
+
     def test_query_rewrite_and_match_queries_strip_intent_words(self) -> None:
         rewritten = rewrite_query_for_embedding("综述一下 H -> aa 相关工作")
         self.assertIn("higgs", rewritten)
