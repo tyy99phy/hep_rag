@@ -2,13 +2,13 @@
 
 配置驱动的高能物理文献图谱与检索框架。从 InspireHEP 在线检索论文元数据，下载 PDF 并解析全文，构建引用图谱和向量索引，支持 BM25 / 向量 / 混合检索与 LLM 问答。
 
-## Master Plan / 状态说明
+## 测试 / Runbooks
 
-如果你正在对照 `.omx/plans/2026-04-01-hep-rag-master-plan.md` 推进仓库演化，先阅读：
+如果你想快速试用、导入文章或做 benchmark，建议先看：
 
-- [`docs/runbooks/master-plan-status.md`](docs/runbooks/master-plan-status.md)
-
-该文档说明了当前仓库与主计划的对应关系、哪些 Step 已经或尚未落地，以及夜间执行时建议保留的最小验证命令。
+- [`docs/runbooks/user-testing.md`](docs/runbooks/user-testing.md)：导入文章、启动 Web/API、做用户端测试
+- [`docs/runbooks/scale-benchmark.md`](docs/runbooks/scale-benchmark.md)：`10k / 50k / 100k` metadata-only 基准
+- [`docs/runbooks/rag-effect-benchmark.md`](docs/runbooks/rag-effect-benchmark.md)：弱模型 vs 弱模型+数据库 的效果对照
 
 ## 架构
 
@@ -331,6 +331,12 @@ workspace/
 pip install pytest
 python -m pytest tests/ -v
 ```
+
+更完整的试用与测试流程见：
+
+- [`docs/runbooks/user-testing.md`](docs/runbooks/user-testing.md)
+- [`docs/runbooks/scale-benchmark.md`](docs/runbooks/scale-benchmark.md)
+- [`docs/runbooks/rag-effect-benchmark.md`](docs/runbooks/rag-effect-benchmark.md)
 
 ## License
 
