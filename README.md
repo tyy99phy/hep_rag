@@ -7,6 +7,7 @@
 如果你想快速试用、导入文章或做 benchmark，建议看：
 
 - [`docs/testing.md`](docs/testing.md)
+- [`docs/pdg-work-implementation.md`](docs/pdg-work-implementation.md)（当前 PDG/work 实施波次的落地约束、审查结论与验收清单）
 
 ## 架构
 
