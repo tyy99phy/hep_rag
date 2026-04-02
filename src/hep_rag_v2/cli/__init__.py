@@ -31,6 +31,7 @@ from .ingest import (
     cmd_enrich_inspire_metadata,
     cmd_fetch_papers,
     cmd_import_mineru,
+    cmd_import_pdg,
     cmd_ingest_metadata,
     cmd_ingest_online,
     cmd_query,
@@ -85,6 +86,7 @@ __all__ = [
     "cmd_search_works",
     "cmd_enrich_inspire_metadata",
     "cmd_import_mineru",
+    "cmd_import_pdg",
     "cmd_reparse_pdfs",
     "cmd_bootstrap_legacy_corpus",
     # search / index

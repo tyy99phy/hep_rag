@@ -74,7 +74,10 @@ hep-rag fetch-papers "rare decay eta to four muons CMS" \
 hep-rag ingest-online "rare decay eta to four muons CMS" \
   --config ./hep-rag.yaml --limit 10 --download-limit 10 --parse-limit 10
 
-# 4b. 对本地已有 PDF 做增量 MinerU 重解析
+# 4b. 把本地 PDG PDF 注册进 archival ingest 骨架
+hep-rag import-pdg --config ./hep-rag.yaml --collection pdg --edition 2024 --pdf /path/to/pdg-2024.pdf
+
+# 4c. 对本地已有 PDF 做增量 MinerU 重解析
 hep-rag reparse-pdfs --config ./hep-rag.yaml --collection default
 
 # 5. 检索（不调用 LLM）
@@ -212,6 +215,7 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 | `reparse-pdfs` | 仅对本地已有 PDF 且尚未成功 materialize 的 work 重新提交 MinerU |
 | `ingest-metadata` | 仅导入元数据（不下载 PDF） |
 | `import-mineru` | 手动导入 MinerU 解析结果 |
+| `import-pdg` | 注册/暂存 PDG PDF，进入 archival ingest 骨架 |
 | `enrich-inspire-metadata` | 补全引文、摘要等字段 |
 | `build-search-index` | 重建 BM25 全文索引 |
 | `build-vector-index` | 重建向量索引 |

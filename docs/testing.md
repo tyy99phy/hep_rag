@@ -39,6 +39,24 @@ hep-rag ingest-online "same sign WW CMS" \
 - 元数据是否成功入库
 - work-level 检索是否可用
 
+## 1.5 PDG archival ingest 骨架冒烟
+
+如果你正在推进 PDG/work 结构化导入，而手头已经有本地 PDG PDF，可以先验证骨架入口：
+
+```bash
+hep-rag import-pdg \
+  --config ./hep-rag.yaml \
+  --collection pdg \
+  --edition 2024 \
+  --pdf /path/to/pdg-2024.pdf
+```
+
+这一步当前主要验证：
+
+- PDG edition 元数据是否能解析成稳定 canonical id
+- 本地 PDF 是否能进入 workspace PDF 区
+- archival ingest stub / 后续 MinerU 接口路径是否稳定
+
 ## 2. selective fulltext 测试
 
 如果 metadata-only 没问题，再测全文热层。

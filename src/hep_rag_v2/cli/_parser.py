@@ -10,6 +10,7 @@ from .ingest import (
     cmd_enrich_inspire_metadata,
     cmd_fetch_papers,
     cmd_import_mineru,
+    cmd_import_pdg,
     cmd_ingest_metadata,
     cmd_ingest_online,
     cmd_query,
@@ -242,6 +243,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--limit", type=int, default=20)
     s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
     s.set_defaults(func=cmd_show_graph)
+
+    s = sub.add_parser("import-pdg", help="Register a PDG PDF into the archival ingest flow")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
+    s.add_argument("--collection", default="pdg", help="Target collection name")
+    s.add_argument("--edition", required=True, help="PDG edition year, e.g. 2024")
+    s.add_argument("--pdf", default=None, help="Existing local PDG PDF to stage into the workspace")
+    s.add_argument("--download", action="store_true", help="Attempt remote PDG PDF download when no local PDF is provided")
+    s.set_defaults(func=cmd_import_pdg)
 
     s = sub.add_parser("import-mineru", help="Import MinerU output and materialize a structured document")
     s.add_argument("--source", required=True, help="ZIP, raw MinerU output dir, manifest.json, or parsed dir")
