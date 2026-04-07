@@ -31,6 +31,8 @@ class PdgImportPipelineTests(unittest.TestCase):
         self.assertEqual(ref["edition"], "2024")
         self.assertEqual(ref["slug"], "review-of-particle-physics")
         self.assertTrue(ref["canonical_id"].startswith("pdg-2024-"))
+        self.assertEqual(ref["pdf_name"], "db2024.pdf")
+        self.assertIn("/2024/download/db2024.pdf", ref["pdf_url"])
         self.assertTrue(ref["pdf_url"].endswith(".pdf"))
         self.assertIn("pdg.lbl.gov", ref["pdf_url"])
 

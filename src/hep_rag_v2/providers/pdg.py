@@ -23,7 +23,7 @@ def resolve_pdg_reference(
         raise ValueError(f"Unsupported PDG slug: {slug}")
 
     canonical_id = f"pdg-{normalized_edition}-{normalized_slug}"
-    pdf_name = f"rpp{normalized_edition}-rev-intro.pdf"
+    pdf_name = f"db{normalized_edition}.pdf"
     return {
         "canonical_source": "pdg",
         "canonical_id": canonical_id,
@@ -32,7 +32,7 @@ def resolve_pdg_reference(
         "title": f"Review of Particle Physics ({normalized_edition})",
         "year": int(normalized_edition),
         "landing_url": f"https://pdg.lbl.gov/{normalized_edition}/reviews/contents_sports.html",
-        "pdf_url": f"https://pdg.lbl.gov/{normalized_edition}/reviews/{pdf_name}",
+        "pdf_url": f"https://pdg.lbl.gov/{normalized_edition}/download/{pdf_name}",
         "pdf_name": pdf_name,
     }
 

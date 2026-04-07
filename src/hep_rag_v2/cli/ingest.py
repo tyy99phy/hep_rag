@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from hep_rag_v2 import paths
-from hep_rag_v2.config import apply_runtime_config
+from hep_rag_v2.config import apply_runtime_config, default_config
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.fulltext import import_mineru_source, materialize_mineru_document
 from hep_rag_v2.graph import rebuild_graph_edges
@@ -20,6 +20,7 @@ from hep_rag_v2.metadata import (
     upsert_collection,
     upsert_work_from_hit,
 )
+from hep_rag_v2.pdg import import_pdg_source
 from hep_rag_v2.pipeline import ask, fetch_online_candidates, import_pdg, ingest_online, reparse_cached_pdfs, retrieve
 from hep_rag_v2.search import rebuild_search_indices
 
@@ -117,16 +118,36 @@ def cmd_reparse_pdfs(args: argparse.Namespace) -> None:
 def cmd_import_pdg(args: argparse.Namespace) -> None:
     try:
         emit_cli_status("loading config...")
-        _, config = apply_runtime_config(config_path=args.config, workspace_root=args.workspace)
-        emit_cli_status("preparing PDG archival import...")
-        payload = import_pdg(
-            config,
-            edition=args.edition,
-            collection_name=args.collection,
-            pdf_path=args.pdf,
-            download=args.download,
-            progress=emit_cli_status,
-        )
+        if args.config is None and args.workspace is None:
+            config = default_config(workspace_root=paths.workspace_root())
+            config["workspace"]["root"] = str(paths.workspace_root())
+        else:
+            _, config = apply_runtime_config(config_path=args.config, workspace_root=args.workspace)
+        if args.source:
+            if not args.source_id or not args.title:
+                raise ValueError("When using --source, both --source-id and --title are required.")
+            emit_cli_status("importing local PDG parsed source...")
+            ensure_db()
+            with connect() as conn:
+                payload = import_pdg_source(
+                    conn,
+                    source_path=args.source,
+                    source_id=args.source_id,
+                    title=args.title,
+                )
+                conn.commit()
+        else:
+            if not args.edition:
+                raise ValueError("Either --source or --edition must be provided for import-pdg.")
+            emit_cli_status("preparing PDG archival import...")
+            payload = import_pdg(
+                config,
+                edition=args.edition,
+                collection_name=args.collection,
+                pdf_path=args.pdf,
+                download=args.download,
+                progress=emit_cli_status,
+            )
         emit_cli_status("PDG archival import finished.")
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
