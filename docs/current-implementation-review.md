@@ -1,6 +1,6 @@
 # 当前版本实现总览与 Review 指南
 
-> 对齐版本：`origin/main` / `13c52bd`  
+> 对齐版本：`origin/main` / `8f53e9d`  
 > 对齐日期：2026-04-07  
 > 文档目的：把当前仓库**已经实现并已落到远端主分支**的功能、代码入口、测试证据、边界与风险集中总结，方便后续做人工 review。
 
@@ -651,7 +651,8 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 
 ### Git / 版本
 
-- 已确认 `13c52bd` 已 push 到 `origin/main`。
+- 已确认本文对应文档提交 `8f53e9d` 已 push 到 `origin/main`；
+- 本文重点总结的最新核心 PDG 功能修复提交为 `13c52bd`，也已包含在当前远端主分支中。
 
 ### 测试
 
@@ -879,11 +880,10 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 
 ## 10. 附：本次文档对齐时的实际证据
 
-- 对齐远端提交：`13c52bd`
+- 对齐远端提交：`8f53e9d`
 - 当前分支状态：`main...origin/main`（写本文档前已 clean）
 - 已重新执行：
   - `pytest -q` → `113 passed in 11.16s`
   - `pytest -q tests/test_pdg_import_pipeline.py tests/test_pdg_structure.py` → `9 passed in 1.88s`
 - 已重新确认：
   - `https://pdg.lbl.gov/2024/download/db2024.pdf` → `200 application/pdf`
-
