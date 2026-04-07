@@ -1,243 +1,629 @@
-# 当前版本实现总览与改动审查（对齐 `origin/main@13c52bd`）
+# 当前版本实现总览与 Review 指南
 
-> 文档目的：把当前仓库**已经落地**的能力、最近一轮**实际改动**、关键文件职责、验证证据、未完成项与 review 建议集中写清，方便后续人工 review。
->
-> 对齐基线：`origin/main` 最新提交 `13c52bd`（2026-04-07 本次已 push）。
+> 对齐版本：`origin/main` / `13c52bd`  
+> 对齐日期：2026-04-07  
+> 文档目的：把当前仓库**已经实现并已落到远端主分支**的功能、代码入口、测试证据、边界与风险集中总结，方便后续做人工 review。
 
 ---
 
 ## 0. 一句话结论
 
-当前版本已经从“单纯的 metadata / PDF / chunk 检索框架”推进到一个**带有显式配置档位、PDG 导入骨架、PDG MinerU 结构化入口、work capsule 默认层、typed retrieval shell、benchmark 脚手架**的 HEP RAG substrate。
+当前版本已经从“单纯抓论文 + 检索”推进到了一个**可运行的 metadata-first / selective-fulltext / typed-retrieval substrate**：
 
-但它**还不是最终形态的 PDG spine + work/result/method 全图谱系统**。更准确地说：
+- 可以从 InspireHEP 检索并入库论文元数据；
+- 可以下载 PDF、调用 MinerU、把解析结果 materialize 成 sections / blocks / chunks；
+- 可以做 BM25、向量、混合检索；
+- 可以输出 typed retrieval shell 和 evidence registry；
+- 可以跑基础 API / Web UI；
+- 可以跑 scale benchmark 和“弱模型接不接数据库”的 benchmark scaffolding；
+- 已经补上了 PDG 这一波次最关键的两个入口：
+  1. **官方完整 PDG PDF 的稳定下载 URL**；
+  2. **本地 PDG MinerU bundle 的直接导入入口**。
 
-- **数据库/检索/服务外壳**已经具备继续扩展的基础；
-- **PDG 接入**已经有了两个入口（官方整本 PDF archival ingest、MinerU bundle 直接结构化导入）；
-- **默认层结构化**已经实现了“非综述文章必须有 result/method signature，否则显式标异常”的第一版门控；
-- **benchmark / ablation** 已有最小脚手架；
-- 但**真正的大规模 PDG 全量解析、paper 结构抽取流水线、global/local 分层检索编排、生产级 typed graph** 还没有完全做完。
+但它**还不是最终版的 PDG/work 双层高能物理知识图谱**。当前更准确的定位是：
 
----
-
-## 1. 当前版本面向用户已经能做什么
-
-### 1.1 基础工作流
-
-用户现在可以直接用 CLI / API 完成下面几类事情：
-
-1. 初始化配置与 workspace
-2. 在线检索 InspireHEP 候选论文
-3. 执行 online ingest（metadata / PDF / MinerU / index / graph）
-4. 对已有 PDF 做增量 MinerU 重解析
-5. 做本地 BM25 / vector / hybrid 检索
-6. 做 retrieval + LLM 问答
-7. 启动 FastAPI + Web Console 做用户端操作
-8. 跑 metadata-only scale benchmark
-9. 生成“弱模型接数据库前后效果” benchmark manifest
-10. 导入 PDG：
-   - **路径 A：**以 official PDF 为入口，先注册 archival ingest stub
-   - **路径 B：**以本地 MinerU bundle 为入口，直接生成 `pdg_sections` 胶囊结构
-
-### 1.2 当前版本最重要的新能力
-
-相对更早的版本，这一轮最关键的新增/强化点是：
-
-- 引入了**显式 mode/profile** 配置约定，而不是靠隐式 fallback；
-- 给出了一套**本地 embedding profile**，默认强调 3090 友好的本地小模型语义向量路径；
-- 新增 **PDG provider + import pipeline**；
-- 新增 **PDG 结构化表**：`pdg_sources` / `pdg_sections`；
-- 新增 **work capsule 默认层**：`work_capsules`；
-- 把“**非综述文章缺 result/method signature 不得静默跳过**”落成了真实代码和测试；
-- 增补了 review 文档与测试文档，让用户入口更整洁；
-- 修复了 PDG 官方 PDF 默认 URL，改为当前可用的 `db{year}.pdf`。
+- `PDG/work` 新架构的**骨架和约束已经开始落地**；
+- `work/result/method` 默认层的最小结构化实现已经存在；
+- 但离“完整 PDG spine + work 深层 typed graph + query harness + 全量真实数据压测”还有明显距离。
 
 ---
 
-## 2. 这一轮实际改了哪些文件
+## 1. 最近这一波到底改了什么
 
-从 `f677bc0` 到当前 `13c52bd`，本波次新增/修改并已推送的主要文件有：
+如果只看当前主干上最关键的一串提交，主线大致是：
 
-### 文档层
+1. `de7c8a8`  
+   把检索底座、typed retrieval shell、evaluation scaffolding、规模 benchmark 脚手架推到可用状态。
+2. `59fb2dc` / `f677bc0`  
+   清理公开文档，把内部 runbooks 从用户面移开，只保留用户真正会用到的测试说明。
+3. `e42a241`  
+   新增 `docs/pdg-work-implementation.md`，把 PDG/work 波次的硬约束、落点和验收方向写清楚。
+4. `44cb1f3`  
+   把 build / retrieval / embedding / profile 相关配置显式化，减少 silent fallback。
+5. `c642361`  
+   让 PDG archival ingest 能先通起来，即使完整结构抽取还没全部接上。
+6. `13c52bd`  
+   修掉 PDG 入口最后两个关键问题：
+   - `import-pdg` 不再只接受 `--edition`，现在也支持**直接导入本地 PDG MinerU bundle**；
+   - 默认 PDG 下载地址改成官方完整 PDF：`https://pdg.lbl.gov/<year>/download/db<year>.pdf`，不再指向已经失效的 intro PDF 路径。
 
-- `README.md`
-- `docs/testing.md`
-- `docs/pdg-work-implementation.md`
-- `config.example.yaml`
+换句话说，**当前主分支的重点不是“做了一个华丽的新 graph 产品”**，而是把后续真正做大规模 HEP RAG 所必须的几个底座先落稳：
 
-### 配置与 CLI 层
+- 数据进库路径；
+- 显式配置与模式；
+- typed retrieval / evidence shell；
+- PDG 接入骨架；
+- benchmark 脚手架；
+- 面向用户的可运行入口。
 
-- `src/hep_rag_v2/config.py`
-- `src/hep_rag_v2/cli/__init__.py`
+---
+
+## 2. 当前版本的系统能力总表
+
+### 2.1 在线论文侧
+
+当前可以：
+
+- 从 InspireHEP 做在线检索；
+- 做 query rewrite；
+- 做 family-aware 合并 / 去重；
+- metadata 入库到 SQLite；
+- 下载 PDF；
+- 调 MinerU 解析；
+- materialize 为 document / section / block / chunk；
+- 建 BM25 / vector / graph 索引；
+- 做 query / ask；
+- 从 Web/API 走一遍同样流程。
+
+对应主入口：
+
+- `src/hep_rag_v2/pipeline.py`
+- `src/hep_rag_v2/metadata.py`
+- `src/hep_rag_v2/fulltext/*`
+- `src/hep_rag_v2/search.py`
+- `src/hep_rag_v2/vector/*`
+- `src/hep_rag_v2/graph.py`
+- `src/hep_rag_v2/cli/*`
+- `src/hep_rag_v2/service/*`
+
+### 2.2 检索 / 问答侧
+
+当前可以：
+
+- 输出 work 命中；
+- 输出 chunk 命中；
+- 输出 typed retrieval metadata；
+- 输出 evidence registry；
+- 让 `ask` 在 evidence 之上生成答案；
+- 通过 facade / tool registry 暴露统一服务接口。
+
+对应主入口：
+
+- `src/hep_rag_v2/retrieval_adapter.py`
+- `src/hep_rag_v2/evidence.py`
+- `src/hep_rag_v2/service/facade.py`
+- `src/hep_rag_v2/service/factory.py`
+
+### 2.3 PDG 侧
+
+当前已经实现两条路径：
+
+1. **archival ingest 路径**  
+   输入 `edition + 本地 PDF / 远端下载`，先把 PDG 作为一个 canonical work 注册进主库。
+2. **local parsed source 路径**  
+   输入本地 PDG MinerU bundle，直接生成 `pdg_sources / pdg_sections`，产出 section capsule。
+
+对应主入口：
+
+- `src/hep_rag_v2/providers/pdg.py`
+- `src/hep_rag_v2/pdg.py`
+- `src/hep_rag_v2/pipeline.py` 中的 `import_pdg(...)`
 - `src/hep_rag_v2/cli/_parser.py`
 - `src/hep_rag_v2/cli/ingest.py`
 
-### PDG / structure / pipeline 层
+### 2.4 结构层 / 默认层
 
-- `src/hep_rag_v2/providers/__init__.py`
-- `src/hep_rag_v2/providers/pdg.py`
-- `src/hep_rag_v2/pipeline.py`
-- `src/hep_rag_v2/pdg.py`
+当前已经有一个最小可运行结构层：
+
+- 新表 `work_capsules`
+- 对非综述文章抽 `result_signature` / `method_signature`
+- 如果缺必需签名，不是静默丢掉，而是标成 `needs_attention`
+- 综述文章允许 `review_relaxed`
+
+对应实现：
+
 - `src/hep_rag_v2/structure.py`
 - `src/hep_rag_v2/schema.sql`
+- `tests/test_pdg_structure.py`
 
-### 测试层
+### 2.5 benchmark 侧
 
+当前已经有两套脚手架：
+
+1. **规模 benchmark**：测 10k / 50k / 100k metadata-only 数据量下的建库与检索延迟；
+2. **RAG 增益 benchmark**：比较弱模型在 `llm_only / llm_plus_retrieve / llm_plus_retrieve_and_structure` 三种场景下的表现。
+
+对应实现：
+
+- `src/hep_rag_v2/loadtest.py`
+- `scripts/run_scale_benchmark.py`
+- `src/hep_rag_v2/benchmark_suite.py`
+- `scripts/run_rag_effect_benchmark.py`
+- `tests/test_loadtest.py`
+- `tests/test_benchmark_suite.py`
+
+---
+
+## 3. 代码结构分块 review
+
+## 3.1 配置与模式层
+
+### 关键文件
+
+- `src/hep_rag_v2/config.py`
+- `config.example.yaml`
 - `tests/test_config_runtime.py`
+
+### 当前实现了什么
+
+`config.py` 现在已经不只是“读配置文件”，而是承担了这几个作用：
+
+- 提供完整默认配置；
+- 支持 `build` / `retrieval` 显式 mode；
+- 支持 `profiles.structure` / `profiles.embedding` / `profiles.pdg`；
+- 提供多套 embedding profile；
+- 显式把 `allow_silent_fallback` 设为 `False`；
+- 支持在无 config 路径时按 workspace 生成默认配置。
+
+### 当前默认 profile 值
+
+`DEFAULT_EMBEDDING_PROFILES` 里已经有三档：
+
+- `bootstrap`：`hash-idf-v1`，CPU，最轻；
+- `semantic_small_local`：`BAAI/bge-small-en-v1.5`，CUDA；
+- `semantic_prod_local`：`BAAI/bge-base-en-v1.5`，CUDA。
+
+### 这意味着什么
+
+这部分已经明显体现出此前讨论过的方向：
+
+- **结构构建模型**和**embedding 模型**分工；
+- 用 profile 显式切换，而不是到处暗藏 fallback；
+- 为单卡 3090 本地 embedding 预留了实际入口。
+
+### 仍然没做到的地方
+
+- 结构构建 backend 目前只是配置上显式化了，还没形成完整的生产级 structured extraction pipeline；
+- `hash-idf-v1` 仍然保留在 bootstrap profile 里，没有被完全淘汰；
+- 还没有把 “semantic_only / structure_only / hybrid” 的全部运行分叉做成完整 end-to-end 产品路径。
+
+---
+
+## 3.2 在线 ingest / PDF / MinerU 主流程
+
+### 关键文件
+
+- `src/hep_rag_v2/pipeline.py`
+- `src/hep_rag_v2/cli/ingest.py`
+- `src/hep_rag_v2/cli/_parser.py`
+- `src/hep_rag_v2/fulltext/*`
+- `tests/test_incremental_reparse.py`
+- `tests/test_mineru_api.py`
+- `tests/test_online_search.py`
+
+### 当前实现了什么
+
+这是仓库最成熟的一段：
+
+- `fetch-papers`：只做在线检索预览；
+- `ingest-online`：做 search → metadata ingest → PDF 下载 → MinerU 解析 → 索引 / 图同步；
+- `reparse-pdfs`：对本地缓存 PDF 做增量重解析；
+- `import-mineru`：手工导入已有 MinerU 输出。
+
+### 当前的实际特点
+
+- 并不是所有文章都必须立刻走 fulltext；
+- 支持 metadata-first，再 selective fulltext；
+- 这与“100k 级 paper 不要一开始就把全文都拖进重流程”这个担忧是对齐的。
+
+### 风险/边界
+
+- 真正 100k 级真实 PDF + 真 MinerU 成本，目前还没有在这个 session 里完成实测；
+- 当前仓库更适合先验证 metadata-first + selective fulltext 的分层可行性，而不是直接宣称能吃下全部真实 HEP 语料。
+
+---
+
+## 3.3 typed retrieval / evidence shell
+
+### 关键文件
+
+- `src/hep_rag_v2/retrieval_adapter.py`
+- `src/hep_rag_v2/evidence.py`
+- `src/hep_rag_v2/service/facade.py`
+- `src/hep_rag_v2/service/factory.py`
+- `tests/test_retrieval_adapter.py`
+- `tests/test_evidence.py`
+- `tests/test_retrieval_shell.py`
+
+### 当前实现了什么
+
+这里是这次版本很重要的一点：**把检索输出变成可组合、可审计的 typed shell，而不是只扔一堆散 JSON。**
+
+`retrieval_adapter.py` 现在有：
+
+- `TypedRetrievalMetadata`
+- `TypedRetrievalResult`
+- `adapt_work_hit(...)`
+- `adapt_chunk_hit(...)`
+- `normalize_retrieval_payload(...)`
+- `build_retrieval_shell(...)`
+
+`evidence.py` 里有：
+
+- `EvidenceEntry`
+- `EvidenceRegistry`
+- work / chunk 分型注册；
+- 统一 citation id / evidence key。
+
+`service/facade.py` 则把 pipeline 的原始 payload 再 enrich 成：
+
+- `typed_retrieval`
+- `evidence_registry`
+- `results`
+
+### 这部分的价值
+
+这是后续做真正 database-augmented reasoning 的必要一步，因为它至少先保证：
+
+- 上层 LLM 看到的是结构化证据；
+- work 命中和 chunk 命中不再混在一起；
+- 未来你要做 ablation（纯语义 / 纯结构 / 混合）时，有一致的壳可以接。
+
+### 当前还没做到的地方
+
+- 还没有真正把 PDG section / work capsule / result/method graph 全并进这个 retrieval shell；
+- 还没有做更高级的 global / local / drill-down 三段式 query harness；
+- 现在更像是“typed evidence substrate”而不是“完整 GraphRAG agent”。
+
+---
+
+## 3.4 work 结构层：`work_capsules`
+
+### 关键文件
+
+- `src/hep_rag_v2/structure.py`
+- `src/hep_rag_v2/schema.sql`
+- `tests/test_pdg_structure.py`
+
+### 当前实现了什么
+
+新增了 `work_capsules` 表，并实现了 `build_work_structures(...)`：
+
+- 对选定 work 读取标题、摘要、最多 12 个可检索 chunks；
+- 用启发式规则提取 result signatures；
+- 用启发式规则提取 method signatures；
+- 对非 review work 强制检查两类签名；
+- 缺失时状态置为 `needs_attention`，并给 `missing_required_signatures`；
+- review work 允许 `review_relaxed`。
+
+### 已有状态语义
+
+- `ready`
+- `needs_attention`
+- `review_relaxed`
+
+### 为什么这很重要
+
+这正好对应了你之前强调过的产品约束：
+
+> 默认层的 result / method signature 对每篇非综述 work 都必须有，否则就没有意义。
+
+当前实现虽然还是 heuristic v1，但至少：
+
+- 没有静默跳过；
+- 失败可见；
+- review 有明确例外；
+- 数据结构已经落到主 schema 里。
+
+### 当前不足
+
+- 还是 pattern-based heuristic，不是 LLM 级结构构建；
+- 还没有拆出 typed `result objects` / `method objects`；
+- 还没有连到 PDG spine 上；
+- 还没有把 anomaly 流程真正接进 inspect/audit/用户侧运营流程。
+
+---
+
+## 3.5 PDG：archival ingest 与 section capsule
+
+### 关键文件
+
+- `src/hep_rag_v2/providers/pdg.py`
+- `src/hep_rag_v2/pdg.py`
+- `src/hep_rag_v2/pipeline.py`
+- `src/hep_rag_v2/cli/_parser.py`
+- `src/hep_rag_v2/cli/ingest.py`
 - `tests/test_pdg_import_pipeline.py`
 - `tests/test_pdg_structure.py`
 
----
-
-## 3. 关键实现分块说明
-
-## 3.1 配置：从“隐式 fallback”转向“显式 mode/profile”
-
-### 相关文件
-
-- `src/hep_rag_v2/config.py`
-- `config.example.yaml`
-- `tests/test_config_runtime.py`
-
 ### 当前实现了什么
 
-`config.py` 现在明确给出了以下配置骨架：
+#### A. archival ingest
 
-- `modes.build`
-- `modes.retrieval`
-- `profiles.structure`
-- `profiles.embedding`
-- `profiles.pdg`
-- `build.structure_backend`
-- `build.embedding_source`
-- `build.allow_silent_fallback`
-- `embedding.allow_silent_fallback`
-- `structure.allow_silent_fallback`
-- `embedding_profiles.bootstrap`
-- `embedding_profiles.semantic_small_local`
-- `embedding_profiles.semantic_prod_local`
+`pipeline.import_pdg(...)` 会：
 
-对应的设计意思非常清楚：
+- 根据 `edition` 解析 canonical PDG reference；
+- 初始化 collection / workspace；
+- 往 `works` 表写一条 canonical PDG work；
+- 把 PDF 暂存到 workspace；
+- 在 `documents` 表里注册一条 `parser_name='pdg'` 的 archival document；
+- 当前 parse_status 主要是 `pdf_ready` / `awaiting_pdf`。
 
-1. **build mode / retrieval mode 显式化**；
-2. **embedding profile 显式化**；
-3. 不再鼓励“出了问题偷偷 fallback”；
-4. 默认把“结构构建”和“语义 embedding”看成两套职责。
+#### B. PDG provider
 
-### 当前默认值的实际含义
+`providers/pdg.py` 现在会：
 
-当前默认配置里：
+- 规范化 `edition` / `slug`；
+- 生成 canonical id：`pdg-<year>-review-of-particle-physics`；
+- 生成 landing URL；
+- **生成官方完整 PDF URL：** `https://pdg.lbl.gov/<year>/download/db<year>.pdf`；
+- 支持本地 PDF copy / 远端下载 / 缓存复用。
 
-- `build.structure_backend = api_llm`
-- `build.embedding_source = local_profile`
-- `profiles.embedding = bootstrap`
-- `embedding_profiles.semantic_small_local = sentence-transformers:BAAI/bge-small-en-v1.5`
-- `embedding_profiles.semantic_prod_local = sentence-transformers:BAAI/bge-base-en-v1.5`
+#### C. local parsed source import
 
-也就是说，代码层已经支持你后续走这样的路线：
+`pdg.import_pdg_source(...)` 会：
 
-- **结构抽取**：API 模型
-- **语义 embedding**：本地轻量模型
+- 导入本地 MinerU bundle；
+- 读取 manifest 与 content list；
+- 产出 `annotated_blocks`；
+- 按 heading 聚合 section；
+- 生成 `capsule_text`；
+- 写入 `pdg_sources` 与 `pdg_sections`。
 
-这与你前面提出的“构建数据库结构可以用 API，小语义向量要本地化”是对齐的。
+#### D. CLI 双入口
 
-### review 时重点看什么
+`import-pdg` 现在支持两类调用：
 
-- `resolve_mode()` 是否真的让模式选择显式化；
-- `resolve_embedding_profile()` 是否彻底禁止 profile 名称拼错后的静默回退；
-- `config.example.yaml` 的默认值是否与你未来真正想推荐给用户的默认安装流程一致。
+1. edition-driven archival import：
+
+```bash
+hep-rag import-pdg --edition 2024 --pdf /path/to/pdg.pdf
+```
+
+2. local parsed-source import：
+
+```bash
+hep-rag import-pdg --source /path/to/pdg_bundle --source-id pdg-2024 --title "PDG 2024"
+```
+
+### 最近一次 PDG 修复的意义
+
+这次 `13c52bd` 的价值非常直接：
+
+- 把一个实际上会 404 的默认 PDG URL 修成了真实可访问的完整 PDF；
+- 把 CLI 从“只能注册 PDF stub”推进到了“也能直接吃已解析 bundle”。
+
+### 已有验证
+
+- 单元测试验证 `resolve_pdg_reference()` 返回稳定 canonical metadata；
+- 单元测试验证 local PDF import 会把 archival record 注册进 `works/documents`；
+- 单元测试验证 local bundle import 会写入 `pdg_sources/pdg_sections`；
+- 真实网络请求验证：`https://pdg.lbl.gov/2024/download/db2024.pdf` 返回 `200 application/pdf`。
 
 ### 当前边界
 
-虽然配置层已经把“反 fallback”方向搭好了，但**还没有形成完整的 profile 驱动执行矩阵**。也就是说：
-
-- 配置契约已经更清楚；
-- 但很多 downstream 流程还没有完全用这些 mode/profile 做细粒度编排。
+- 还**没有在本 session 真正跑完整 PDG 全文 + 真 MinerU + 全量 structure**；
+- `pdg_sections` 现在是 section capsule，不是完整 PDG typed graph；
+- 还没把 PDG section 检索、PDG↔work 联结、PDG global/local routing 接进最终 retrieval path。
 
 ---
 
-## 3.2 PDG archival ingest：先把 PDG 当成一个稳定 canonical work
+## 3.6 benchmark 与规模可行性脚手架
 
-### 相关文件
+### 关键文件
 
-- `src/hep_rag_v2/providers/pdg.py`
-- `src/hep_rag_v2/pipeline.py`
-- `src/hep_rag_v2/cli/_parser.py`
-- `src/hep_rag_v2/cli/ingest.py`
-- `tests/test_pdg_import_pipeline.py`
+- `src/hep_rag_v2/loadtest.py`
+- `scripts/run_scale_benchmark.py`
+- `src/hep_rag_v2/benchmark_suite.py`
+- `scripts/run_rag_effect_benchmark.py`
+- `tests/fixtures/rag_effect_benchmark_cases.json`
+- `tests/test_loadtest.py`
+- `tests/test_benchmark_suite.py`
 
 ### 当前实现了什么
 
-这一层解决的是：
+#### A. scale benchmark
 
-> “先把 PDG 这本东西作为一个可追踪、可缓存、可继续往下解析的 canonical source 放进系统。”
+`loadtest.py` 提供：
 
-主要实现包括：
+- `10k` / `50k` / `100k` tier；
+- synthetic metadata hit 生成；
+- BM25 / vector index build；
+- query latency (`p50`, `p95`)；
+- SQLite 大小、峰值内存、导出结果。
 
-1. `resolve_pdg_reference()`
-   - 生成稳定的 `canonical_source = pdg`
-   - 生成稳定的 `canonical_id = pdg-{year}-review-of-particle-physics`
-   - 生成标题、landing_url、pdf_url 等元数据
+这部分主要是在回答：
 
-2. `stage_pdg_pdf()`
-   - 支持本地 PDF copy/stage
-   - 支持远程下载
-   - 支持复用已有缓存
-   - 带 PDF 内容合法性检查
+> 如果先走 metadata-first，数据库在 10k / 50k / 100k work 量级会不会立刻变笨重？
 
-3. `pipeline.import_pdg()`
-   - 初始化 collection / workspace
-   - 把 PDG 作为 `works` 中的一个 archival work 注册
-   - 在 `documents` 中创建 parser=`pdg` 的文档记录
-   - 把 parse status 标成 `pdf_ready` 或 `awaiting_pdf`
+它还不是“真实语料压测”，但已经给了一个统一的 harness。
 
-### 这次修复了什么关键问题
+#### B. RAG-effect benchmark
 
-本次最新 push 的 `13c52bd` 做了两个非常关键的修正：
+`benchmark_suite.py` 里定义了三种场景：
 
-#### (1) `import-pdg` 不再只能走 `--edition`
+- `llm_only`
+- `llm_plus_retrieve`
+- `llm_plus_retrieve_and_structure`
 
-现在 `import-pdg` 有两条路径：
+这与我们前面讨论的 ablation 基本一致：
 
-- `--edition [--pdf | --download]`：archival ingest 入口
-- `--source --source-id --title`：本地 MinerU bundle 直接导入 PDG 结构层
+- 不接数据库；
+- 只接检索；
+- 接检索 + 结构化 shell。
 
-这使得你既能：
+### 当前不足
 
-- 从官方整本 PDF 开始走标准入口；
-- 也能直接拿已有 MinerU 产物做结构化导入测试。
+- 还没有补出你提到的“纯结构图谱不加 embedding”的完整执行路径；
+- 还没有做真实弱模型自动打分；
+- 目前更像 manifest / fixture / harness，而不是完整 benchmark 平台。
 
-#### (2) 默认 PDF URL 改成当前官方可用路径
+---
 
-已从旧的 intro review PDF 路径切到：
+## 3.7 API / Web UI / service facade
 
-- `https://pdg.lbl.gov/{year}/download/db{year}.pdf`
+### 关键文件
 
-这个改动很重要，因为旧的 `rev-intro` 路径在当前站点布局下已经不稳定，2024 年对应路径甚至会 404。
+- `src/hep_rag_v2/service/facade.py`
+- `src/hep_rag_v2/service/factory.py`
+- `src/hep_rag_v2/api/*`
+- `README.md`
+- `docs/testing.md`
 
-### 当前用户可用命令
+### 当前实现了什么
 
-#### 路径 A：official PDF -> archival ingest
+目前面向用户的交互面已经比较完整：
+
+- CLI：适合本地操作与脚本化测试；
+- FastAPI：适合服务化调用；
+- 简单 Web UI：适合做用户端 smoke test。
+
+README 里已经明确列出用户路径：
+
+- `fetch-papers`
+- `ingest-online`
+- `import-pdg`
+- `reparse-pdfs`
+- `query`
+- `ask`
+- `hep-rag-api`
+
+### 当前的意义
+
+这意味着当前版本不是“只有内核代码”，而是已经到了一个用户可以：
+
+- clone；
+- 配 config；
+- 导入一批 work；
+- 看 retrieve；
+- 看 ask；
+- 看 Web UI；
+- 跑 benchmark。
+
+### 当前不足
+
+- UI 仍然是最小可用，不是产品级前端；
+- 还没有专门为 PDG/work 新架构设计用户 query harness；
+- 还没有暴露完整的结构化 graph query 体验。
+
+---
+
+## 4. 数据库层面新增/关键表
+
+当前主 schema 里值得重点 review 的新增/关键表有：
+
+### 4.1 已有主干表
+
+- `works`
+- `work_ids`
+- `collection_works`
+- `documents`
+- `document_sections`
+- `blocks`
+- `chunks`
+- 图谱与向量相关表
+
+### 4.2 本波次值得重点看的新表
+
+#### `work_capsules`
+
+用途：
+
+- 放 work 级最小结构化表示；
+- 挂 result / method signature；
+- 挂 anomaly 与 status。
+
+#### `pdg_sources`
+
+用途：
+
+- 登记某个 PDG 源（source_id、manifest、parsed_dir、block/capsule 数量）。
+
+#### `pdg_sections`
+
+用途：
+
+- 存 PDG section 级 capsule；
+- 支持 page range / title / path_text / raw_text / capsule_text。
+
+### 当前数据库设计含义
+
+这说明现在的方向已经不是“把全文硬塞进一个大向量库”，而是逐渐朝：
+
+- work 级轻量层；
+- PDG section 级轻量层；
+- chunk 级 drill-down 层；
+
+三层拆分迈进。
+
+---
+
+## 5. 当前用户真正能怎么用
+
+## 5.1 最短可运行路径
+
+### A. 初始化
+
+```bash
+hep-rag init-config --config ./hep-rag.yaml --workspace ./workspace
+```
+
+### B. 预览在线候选
+
+```bash
+hep-rag fetch-papers "same sign WW CMS" --config ./hep-rag.yaml --limit 5
+```
+
+### C. metadata-only ingest
+
+```bash
+hep-rag ingest-online "same sign WW CMS" \
+  --config ./hep-rag.yaml \
+  --limit 20 \
+  --download-limit 0 \
+  --parse-limit 0
+```
+
+### D. selective fulltext
+
+```bash
+hep-rag ingest-online "same sign WW CMS" \
+  --config ./hep-rag.yaml \
+  --limit 20 \
+  --download-limit 8 \
+  --parse-limit 4
+```
+
+### E. 检索 / 问答
+
+```bash
+hep-rag query "CMS VBS SSWW latest result" --config ./hep-rag.yaml --limit 8
+hep-rag ask "总结 CMS VBS SSWW 的最新结果" --config ./hep-rag.yaml --mode survey
+```
+
+### F. PDG 路径
+
+#### 用本地 PDF 注册 archival stub
 
 ```bash
 hep-rag import-pdg \
   --config ./hep-rag.yaml \
   --collection pdg \
   --edition 2024 \
-  --pdf /path/to/db2024.pdf
+  --pdf /path/to/pdg-2024.pdf
 ```
 
-或：
-
-```bash
-hep-rag import-pdg \
-  --config ./hep-rag.yaml \
-  --collection pdg \
-  --edition 2024 \
-  --download
-```
-
-#### 路径 B：MinerU bundle -> 直接结构化导入
+#### 用本地 MinerU bundle 直接导入 PDG section capsule
 
 ```bash
 hep-rag import-pdg \
@@ -246,605 +632,258 @@ hep-rag import-pdg \
   --title "PDG 2024"
 ```
 
-### 当前边界
+### G. Web/API
 
-这条 archival ingest 流程目前**还没有自动把真实 PDG PDF 送进 MinerU 并完成整本结构化**。它现在完成的是：
+```bash
+hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
+```
 
-- canonical work 注册
-- PDF 落地/缓存
-- 文档记录初始化
+然后打开：
 
-它是**稳定骨架**，不是最终整本 PDG 自动结构化流水线。
+- `http://127.0.0.1:8000/`
+- `http://127.0.0.1:8000/docs`
 
 ---
 
-## 3.3 PDG MinerU bundle -> `pdg_sections`：PDG 结构化入口已落地
+## 6. 当前版本已经验证过什么
 
-### 相关文件
+## 6.1 本 session 已重新验证的事实
 
-- `src/hep_rag_v2/pdg.py`
-- `src/hep_rag_v2/schema.sql`
+### Git / 版本
+
+- 已确认 `13c52bd` 已 push 到 `origin/main`。
+
+### 测试
+
+- `pytest -q` 通过；
+- 结果：**113 passed**。
+
+### PDG 定点验证
+
+- `pytest -q tests/test_pdg_import_pipeline.py tests/test_pdg_structure.py` 通过；
+- 结果：**9 passed**。
+
+### 真实网络验证
+
+- 对 `https://pdg.lbl.gov/2024/download/db2024.pdf` 发起真实 GET；
+- 返回：`200 application/pdf`。
+
+## 6.2 自动化测试重点覆盖了什么
+
+### 配置与运行时
+
+- `tests/test_config_runtime.py`
+
+覆盖：
+
+- config 创建/加载；
+- workspace 切换；
+- explicit mode/profile；
+- embedding profile 解析；
+- PDF candidate 优先级；
+- runtime CLI 行为。
+
+### PDG / structure
+
+- `tests/test_pdg_import_pipeline.py`
 - `tests/test_pdg_structure.py`
 
-### 当前实现了什么
+覆盖：
 
-`pdg.py` 新增了一套专门针对 PDG 结构化结果的 schema 与导入逻辑：
+- PDG canonical metadata；
+- local PDF archival import；
+- local PDG bundle import；
+- work signature policy；
+- review 例外；
+- anomaly 标记。
 
-#### 新表
+### retrieval / evidence
 
-- `pdg_sources`
-- `pdg_sections`
-
-它们的角色是：
-
-- `pdg_sources`：记录一次 PDG 来源、manifest、parsed_dir、block_count、capsule_count
-- `pdg_sections`：记录 PDG 的 section 级胶囊，包括：
-  - `title`
-  - `path_text`
-  - `section_kind`
-  - `level`
-  - `page_start/page_end`
-  - `raw_text`
-  - `capsule_text`
-
-#### 导入函数
-
-`import_pdg_source()` 当前会：
-
-1. 把本地 MinerU bundle 导入到 workspace 下的 `parsed/pdg/<source_id>`；
-2. 读取 manifest 与 content list；
-3. 把 MinerU block 解析成 annotated blocks；
-4. 按 heading 收集 section；
-5. 为每个 section 生成 capsule text；
-6. 写入 `pdg_sources` 与 `pdg_sections`。
-
-### 这层实现的意义
-
-这正是你前面一直在说的“PDG 不应该只当成一个粗糙摘要，也不能直接把整本原文当默认搜索单位”之间的中间层。
-
-当前版本已经给出一个**section capsule 级别**的 PDG 结构层，它比整本摘要细、比原始 chunk 粗，适合作为后续：
-
-- PDG spine
-- global/community summary
-- 与 work capsule 对接
-
-的基础材料。
-
-### 当前边界
-
-目前 `pdg_sections` 还只是**章节胶囊层**，还没有进一步抽成：
-
-- PDG concept / entity / relation graph
-- PDG topic -> work linkage
-- PDG spine 上的 typed semantic nodes
-
-所以这是一层很有价值的 substrate，但不是最终图谱本体。
-
----
-
-## 3.4 `work_capsules`：默认层门控已经从想法变成代码
-
-### 相关文件
-
-- `src/hep_rag_v2/structure.py`
-- `src/hep_rag_v2/schema.sql`
-- `tests/test_pdg_structure.py`
-- `docs/pdg-work-implementation.md`
-
-### 当前实现了什么
-
-`structure.py` 新增了 `work_capsules` 表和 `build_work_structures()` 流程。
-
-#### 新表 `work_capsules`
-
-每个 `work_id` 最多对应一个 capsule，主要字段包括：
-
-- `profile`
-- `builder`
-- `is_review`
-- `status`
-- `capsule_text`
-- `result_signature_json`
-- `method_signature_json`
-- `anomaly_code`
-- `anomaly_detail`
-
-#### 当前的结构化逻辑
-
-对于选中的 work：
-
-1. 取 title / abstract / 前若干可检索 chunk；
-2. 组成 `text_blob`；
-3. 用 heuristic pattern 抽 `result signatures`；
-4. 用 heuristic pattern 抽 `method signatures`；
-5. 判定是不是 review；
-6. 如果是非综述且缺少任一类 signature，则显式标为 `needs_attention`；
-7. 否则标为 `ready`；
-8. 生成 capsule_text 并 upsert 到 `work_capsules`。
-
-### 当前已经落地的硬约束
-
-这一点尤其重要：
-
-> **非综述文章如果抽不出 result signature 或 method signature，不会被静默跳过，而会被显式标异常。**
-
-这是你之前反复强调的要求，这一轮已经在代码里真正实现了：
-
-- review -> `review_relaxed`
-- 缺签名 -> `needs_attention`
-- 满足要求 -> `ready`
-
-### 当前抽取方式的性质
-
-这套抽取现在还是 **heuristic-v1**，也就是关键字/模式驱动，而不是 API LLM 驱动。
-
-优点：
-
-- 快
-- 可测试
-- 不依赖外部模型
-- 先把数据库门控规则落地
-
-缺点：
-
-- 召回/精度有限
-- 不足以覆盖真实复杂 paper 的 method/result 描述
-- 离你想要的“高能物理结果与方法网络”还有距离
-
-### 当前边界
-
-- 还没有 result object / method object / relation table
-- 还没有把 `work_capsules` 真正纳入 retrieval planner
-- 还没有 API LLM 结构抽取版本
-- 还没有基于 figure/table/formula 的 richer signature 抽取
-
-所以这部分更像是：
-
-> **默认层门禁和结构骨架已经落地，但 typed graph 本体仍在后续。**
-
----
-
-## 3.5 retrieval / evidence shell / benchmark：现阶段可 review 的成熟部分
-
-### 相关文件
-
-- `src/hep_rag_v2/retrieval_adapter.py`
-- `src/hep_rag_v2/evidence.py`
-- `src/hep_rag_v2/service/facade.py`
-- `src/hep_rag_v2/service/factory.py`
-- `src/hep_rag_v2/benchmark_suite.py`
-- `src/hep_rag_v2/loadtest.py`
-- `scripts/run_scale_benchmark.py`
-- `scripts/run_rag_effect_benchmark.py`
 - `tests/test_retrieval_adapter.py`
-- `tests/test_retrieval_shell.py`
 - `tests/test_evidence.py`
+- `tests/test_retrieval_shell.py`
+
+覆盖：
+
+- work/chunk 命中适配；
+- evidence registry；
+- typed shell 输出。
+
+### benchmark
+
+- `tests/test_loadtest.py`
 - `tests/test_benchmark_suite.py`
 
-### 当前实现了什么
+覆盖：
 
-#### typed retrieval shell
-
-现在 retrieval 返回结果不只是松散 JSON，而是有一层 typed normalization：
-
-- `TypedRetrievalMetadata`
-- `TypedRetrievalResult`
-- `adapt_work_hit()`
-- `adapt_chunk_hit()`
-- `normalize_retrieval_payload()`
-- `build_retrieval_shell()`
-
-这层会统一 work/chunk 两种命中，让输出更适合作为后续结构化 answer 或外部 agent tool 调用的中间格式。
-
-#### evidence registry
-
-`EvidenceRegistry` 支持：
-
-- evidence 注册
-- citation id 分配
-- work/chunk 分 lane 管理
-- 重复证据去重
-
-它的作用是把“检索结果”进一步包装成“可以稳定引用的证据对象”。
-
-#### service facade / tool registry
-
-`HepRagServiceFacade` 当前已经把：
-
-- `retrieve`
-- `ask`
-- `fetch_papers`
-- `ingest_online`
-- `reparse_pdfs`
-- `workspace_status`
-- `show_graph`
-- `show_document`
-- `audit_document`
-
-统一包装成服务层接口。
-
-这使 CLI、API、后续 agent tool registry 可以共享一套中间服务层，而不是各自直连底层 pipeline。
-
-#### benchmark 脚手架
-
-目前已经有两类 benchmark：
-
-1. **scale benchmark**
-   - `10k / 50k / 100k`
-   - 测 metadata-only ingest、BM25、vector 索引与查询延迟
-
-2. **RAG effect benchmark**
-   - `llm_only`
-   - `llm_plus_retrieve`
-   - `llm_plus_retrieve_and_structure`
-
-第二类 benchmark 非常贴合你后面想做的事情：
-
-> 用较弱模型，比较接入数据库前后性能差别，衡量数据库真正提供了多少价值。
-
-### 当前边界
-
-- ablation 现在是 **manifest scaffolding**，不是完整自动评测流水线；
-- `structure_only / semantic_only / hybrid` 的运行时切换思想已经有了方向，但还没有在完整 query planner 中彻底跑通；
-- `work_capsules` / `pdg_sections` 还没有真正接进 `TypedRetrievalResult` 的主 lane。
+- scale tier；
+- dry-run；
+- benchmark manifest 与 scenario matrix。
 
 ---
 
-## 3.6 API / Web Console：用户端测试入口已经比较完整
+## 7. 当前明确还没完成的部分
 
-### 相关文件
+这部分建议在 review 时特别注意，不要把“已有骨架”误判成“已完工产品”。
 
-- `src/hep_rag_v2/api/*`
-- `src/hep_rag_v2/service/facade.py`
-- `tests/test_service_api.py`
-- `README.md`
-- `docs/testing.md`
+### 7.1 PDG 还不是完整 spine
 
-### 当前实现了什么
+当前只做到了：
 
-从文档和测试看，当前 Web/API 层已经支持：
+- archival stub；
+- local parsed source import；
+- section capsule 持久化。
 
-- `/` Web Console
-- `/docs` Swagger
-- `/health`
-- `/auth/status`
-- `/retrieve`
-- `/ask`
-- `/fetch-papers`
-- `/jobs/ingest-online`
-- `/jobs/reparse-pdfs`
-- `/jobs/{job_id}`
-- `/jobs/{job_id}/events`
+还没做到：
 
-并且异步 job 事件会落到单独的 API DB，不和主业务 DB 强耦合。
+- 全量 PDG 真实导入的端到端耗时评估；
+- PDG 全局图谱构建；
+- PDG ↔ work typed relation 自动写入；
+- PDG 驱动的 global retrieval 路由。
 
-### 这层对 review 的价值
+### 7.2 structure layer 还是最小启发式版
 
-这一层说明当前仓库不是纯研究脚本，而已经有一个比较清楚的**用户交互面**，适合：
+当前 `result/method` 提取是 heuristic v1，不是成熟结构抽取系统。它解决的是：
 
-- 做本地 demo
-- 做用户测试
-- 做数据导入与运行日志观察
-- 做 API 集成验证
+- “默认层不能静默跳过”这个产品约束；
 
-### 当前边界
+但还没解决：
 
-- Web Console 仍然是“最小可用控制台”，不是成熟产品 UI；
-- 结构化检索层、PDG spine、global/local planner 还没有在 UI 层显式体现；
-- 更适合技术验证，不适合现在就作为 polished 产品前端。
+- 高质量 typed extraction；
+- 复杂实验 paper 的细粒度对象图；
+- 跨 article 的 method transfer graph。
 
----
+### 7.3 benchmark 还是 scaffold，不是终局评测平台
 
-## 4. 文档层现在是什么状态
+当前已经有：
 
-## 4.1 `README.md`
+- tier benchmark；
+- rag-effect manifest；
 
-作用：
+但还没有：
 
-- 用户入口总览
-- 快速开始
-- CLI 命令索引
-- Web/API 使用说明
-- 指向 `docs/testing.md` 与 `docs/pdg-work-implementation.md`
+- 自动打分闭环；
+- 真实弱模型批量跑分；
+- semantic_only / structure_only / hybrid 的完整线上可切换实现矩阵。
 
-当前风格已经比之前更整洁，至少没有把夜间 runbook 之类内部操作塞给用户。
+### 7.4 没有在本 session 做真实完整 PDG 全流程观察
 
-## 4.2 `docs/testing.md`
+这点必须明确：
 
-作用：
+- 当前我修通了入口、验证了 URL、验证了单测；
+- 但还**没有在这次 session 里完全作为观察者跑完整 PDG 真 PDF → 真 MinerU → 真结构化 → 真入库耗时**。
 
-- 给用户一条比较清楚的测试路径：
-  - metadata-only
-  - selective fulltext
-  - query / ask
-  - Web/API
-  - benchmark
-
-同时明确写了：
-
-- 当前适合测什么
-- 当前还不适合直接测什么
-
-这是对外比较合适的文档层次。
-
-## 4.3 `docs/pdg-work-implementation.md`
-
-作用：
-
-- 不是用户教程，而是**当前这一波 PDG/work 实施约束说明**
-- 把你在讨论中反复强调的约束写进一个稳定文档：
-  - 显式 mode/profile
-  - 非综述强制 result/method signature
-  - 失败要显式标记
-  - embedding 与结构模型解耦
-
-这个文档对未来 review 和继续实现都很重要，因为它把“为什么这么做”固定下来了。
+所以如果后续要 review “真实 PDG 导入行为是否顺畅”，还需要单独跑一次现实验。
 
 ---
 
-## 5. 当前版本最值得你 review 的 8 个问题
+## 8. 对未来 review 最值得看的文件顺序
 
-### 5.1 PDG official PDF URL 是否稳定
+如果你想最高效 review，我建议按下面顺序看：
 
-当前已经修到了 `db{year}.pdf`，并实测 2024 路径返回 `200 application/pdf`。
+### 第一组：先看产品入口与边界
 
-这比上一版可靠得多，但它依旧依赖 PDG 官网目录结构未来不变。
+1. `README.md`
+2. `docs/testing.md`
+3. `docs/pdg-work-implementation.md`
 
-### 5.2 `import-pdg` 双路径契约是否足够清楚
+目标：
 
-代码已经支持：
+- 看当前用户路径是什么；
+- 看当前版本明确承诺了什么；
+- 看 PDG/work 波次的硬约束是什么。
 
-- archival import
-- local bundle import
+### 第二组：看配置与模式
 
-但 README 里对 `--source --source-id --title` 这条路径还没有展开写清。
-这不是代码 bug，但属于**文档覆盖略落后于能力**。
+4. `src/hep_rag_v2/config.py`
+5. `config.example.yaml`
+6. `tests/test_config_runtime.py`
 
-### 5.3 `work_capsules` 的 heuristic 抽取是否只是临时版
+目标：
 
-答案是：是的。
+- 看 fallback 是否被压缩成显式 mode/profile；
+- 看 embedding profile 是否可切换；
+- 看 3090 本地 embedding 路径是否清楚。
 
-它现在主要解决“门控与显式异常”问题，而不是最终抽取质量问题。
+### 第三组：看检索底座
 
-### 5.4 `work_capsules` 是否已经真正接入主检索
+7. `src/hep_rag_v2/retrieval_adapter.py`
+8. `src/hep_rag_v2/evidence.py`
+9. `src/hep_rag_v2/service/facade.py`
+10. `tests/test_retrieval_adapter.py`
+11. `tests/test_evidence.py`
+12. `tests/test_retrieval_shell.py`
 
-还没有完全接进去。
+目标：
 
-它已经存在于数据库里，也有清晰状态模型，但还未成为 retrieval planner 的主 lane。
+- 看 typed retrieval shell 是否足够干净；
+- 看 evidence registry 是否适合作为上层 agent 的统一接口。
 
-### 5.5 `pdg_sections` 是否已经和 paper/work 打通
+### 第四组：看 PDG 与结构层
 
-也还没有。
+13. `src/hep_rag_v2/providers/pdg.py`
+14. `src/hep_rag_v2/pdg.py`
+15. `src/hep_rag_v2/structure.py`
+16. `tests/test_pdg_import_pipeline.py`
+17. `tests/test_pdg_structure.py`
 
-当前 PDG 和 work 在数据库层都已有入口，但“PDG spine + work capture 联动”的关系层还没有真正写出来。
+目标：
 
-### 5.6 fallback 是否真的基本被拿掉了
+- 看 PDG 入口是否稳；
+- 看 section capsule 的粒度是否合理；
+- 看默认层签名门控是否符合你最初要求。
 
-配置层已经非常明确地往“显式模式，不要 silent fallback”推进；
-但在更大范围的 pipeline 编排层，还没有完全做成严格模式矩阵。
+### 第五组：看 benchmark
 
-### 5.7 benchmark 是否已经足够用于最终科研评估
+18. `src/hep_rag_v2/loadtest.py`
+19. `src/hep_rag_v2/benchmark_suite.py`
+20. `scripts/run_scale_benchmark.py`
+21. `scripts/run_rag_effect_benchmark.py`
+22. `tests/test_loadtest.py`
+23. `tests/test_benchmark_suite.py`
 
-还不够。
+目标：
 
-现在更像是：
-
-- 有比较合理的脚手架
-- 有你后面想做的评估方向
-- 但还没有完整 automated harness + scoring pipeline
-
-### 5.8 是否已经适合直接导入 100k paper 做生产级验证
-
-还不能直接下这个结论。
-
-因为当前虽然已有：
-
-- 10k/50k/100k scale benchmark scaffold
-- metadata-only 压测路径
-
-但对真正的：
-
-- MinerU 成本
-- chunk/asset 保留策略
-- 结构抽取耗时
-- 增量更新策略
-- PDG + work 复合检索延迟
-
-还没有完整实测闭环。
-
----
-
-## 6. 当前已验证证据
-
-以下是这次对齐远端前后实际跑过的验证：
-
-### 6.1 全量测试
-
-```bash
-pytest -q
-```
-
-结果：
-
-- `113 passed`
-
-### 6.2 PDG 相关定向测试
-
-```bash
-pytest -q tests/test_pdg_import_pipeline.py tests/test_pdg_structure.py
-```
-
-结果：
-
-- `9 passed`
-
-### 6.3 官方 PDG PDF 路径在线检查
-
-已实际请求：
-
-- `https://pdg.lbl.gov/2024/download/db2024.pdf`
-
-结果：
-
-- `200`
-- `content-type: application/pdf`
-
-### 6.4 本次 push 结果
-
-已执行并成功：
-
-```bash
-git push origin main
-```
-
-远端已对齐到：
-
-- `origin/main@13c52bd`
+- 看 100k 级可行性验证是否有了统一入口；
+- 看未来“数据库到底有没有帮助弱模型”是否有了比较框架。
 
 ---
 
-## 7. 当前仍然明显未完成 / 暂缓的部分
+## 9. 最后总结：当前版本的真实定位
 
-下面这些是 review 时必须明确区分为“未来工作”的，而不是误以为已完成：
+我认为当前主干最准确的定位不是：
 
-### 7.1 PDG spine 还没有完成
+- “已经完成最终 HEP GraphRAG 产品”；也不是
+- “只是一些零散 patch”。
 
-当前只有：
+而是：
 
-- PDG archival work
-- PDG section capsules
+> **已经搭出一个值得继续投资的、relational-first、typed-substrate 优先的 HEP RAG v2 基座。**
 
-还没有：
+它最重要的价值在于：
 
-- PDG concept graph
-- PDG relation graph
-- PDG -> work typed linkage layer
+1. **避免了一开始就做大而笨重的全量图系统；**
+2. **把 metadata-first、work-level、chunk drill-down 分层先立住；**
+3. **开始把 PDG 作为未来 spine 接进来，但还没假装自己已经做完；**
+4. **把弱模型 + 数据库增益的 benchmark 思路落成了代码脚手架；**
+5. **把 silent fallback 往 explicit mode/profile 的方向推进了。**
 
-### 7.2 work/result/method 图谱本体还没有完成
+如果下一步继续推进，我认为最自然的主线会是：
 
-当前只有：
-
-- `work_capsules`
-- `result_signature_json`
-- `method_signature_json`
-
-还没有：
-
-- 独立 typed nodes / edges
-- 跨 work 方法迁移链路
-- 可供 global reasoning 的高层方法图
-
-### 7.3 full end-to-end PDG real PDF parse 还没在这次 session 实测
-
-代码入口已经准备得比之前好很多，但这次 session 没有把**整本真实 PDG**完整喂进 MinerU 再跑完全结构化，所以下面这些还没有真实数据：
-
-- 真正耗时
-- 真正 section 数量
-- 真正表规模
-- 真正数据库膨胀情况
-
-### 7.4 global/local 检索编排还没真正产品化
-
-你前面讨论的：
-
-- local：work seed -> 扩散 -> drill-down chunk
-- global：community / summary / PDG spine / work capsule 层级搜索
-
-这些思想已经体现在规划和部分 substrate 上，但还未完整落实为一个成熟 planner。
+- 真跑一次完整 PDG 导入观察；
+- 把 PDG section、work capsule、chunk drill-down 串成真正的 local/global/query harness；
+- 把 structure-only / semantic-only / hybrid 三条 ablation 彻底做实；
+- 再往 typed result/method objects 与 PDG↔work 联结推进。
 
 ---
 
-## 8. 建议的 review 顺序
+## 10. 附：本次文档对齐时的实际证据
 
-如果你准备系统 review，建议按下面顺序看：
-
-### 第一组：看“方向有没有偏”
-
-1. `docs/pdg-work-implementation.md`
-2. `config.example.yaml`
-3. `src/hep_rag_v2/config.py`
-
-### 第二组：看“PDG 接入是不是靠谱”
-
-4. `src/hep_rag_v2/providers/pdg.py`
-5. `src/hep_rag_v2/pipeline.py`（`import_pdg` 部分）
-6. `src/hep_rag_v2/cli/_parser.py`
-7. `src/hep_rag_v2/cli/ingest.py`
-8. `src/hep_rag_v2/pdg.py`
-9. `tests/test_pdg_import_pipeline.py`
-10. `tests/test_pdg_structure.py`
-
-### 第三组：看“默认层规则是否真的落地”
-
-11. `src/hep_rag_v2/structure.py`
-12. `src/hep_rag_v2/schema.sql`
-
-### 第四组：看“这个项目现在是不是已经有用户面和评测面”
-
-13. `README.md`
-14. `docs/testing.md`
-15. `src/hep_rag_v2/retrieval_adapter.py`
-16. `src/hep_rag_v2/evidence.py`
-17. `src/hep_rag_v2/service/facade.py`
-18. `src/hep_rag_v2/benchmark_suite.py`
-19. `src/hep_rag_v2/loadtest.py`
-20. `tests/test_benchmark_suite.py`
-
----
-
-## 9. 我对当前版本的总体判断
-
-如果把目标分成三个层级：
-
-### 层级 A：小而美、可跑、可测、可继续长
-
-当前版本**已经达到了这个层级**。
-
-它已经不是散乱脚本，而是：
-
-- 有配置契约
-- 有 CLI
-- 有 API
-- 有 DB schema
-- 有 typed retrieval shell
-- 有 benchmark scaffold
-- 有 PDG/work 演化方向的代码落点
-
-### 层级 B：PDG + work 双层知识底座
-
-当前版本**已经把底座的第一段打好了**，但还没有真正完成。
-
-已完成的是：
-
-- PDG archival/source layer
-- PDG section capsule layer
-- work capsule default layer
-
-未完成的是：
-
-- PDG spine 与 work capsule 的有机耦合
-- global/local 分层 planner
-- typed result/method graph
-
-### 层级 C：面向高能物理创新发现的高阶 GraphRAG
-
-当前版本**还远未到这一层**。
-
-但和 trivial graphRAG + 本地小模型 demo 相比，它已经更接近一个真正能往“高能物理知识底座”方向生长的 substrate。
-
----
-
-## 10. 最后总结
-
-如果你问“当前这版到底做成了什么”，最准确的回答是：
-
-> 它已经把 **HEP RAG 的工程骨架、PDG 导入入口、默认层结构门控、typed retrieval shell、benchmark 脚手架** 做成了一个可 review、可继续迭代的版本；
-> 但它还没有把 **PDG spine + work/result/method typed graph + global/local planner** 彻底做完。
-
-如果你问“这一版最大的价值是什么”，我会说是：
-
-1. **方向已经从‘堆 fallback 的抓取器’转向‘显式模式的知识底座’**；
-2. **PDG 与 work 的两个入口都已经落代码**；
-3. **默认层不再允许非综述 work 静默缺失 result/method 签名**；
-4. **后续无论做 benchmark、做 PDG 全量导入、做 global/local planner，都已经有真实代码支点可以接。**
+- 对齐远端提交：`13c52bd`
+- 当前分支状态：`main...origin/main`（写本文档前已 clean）
+- 已重新执行：
+  - `pytest -q` → `113 passed in 11.16s`
+  - `pytest -q tests/test_pdg_import_pipeline.py tests/test_pdg_structure.py` → `9 passed in 1.88s`
+- 已重新确认：
+  - `https://pdg.lbl.gov/2024/download/db2024.pdf` → `200 application/pdf`
 
