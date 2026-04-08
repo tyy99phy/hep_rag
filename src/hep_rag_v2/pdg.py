@@ -42,7 +42,10 @@ CREATE INDEX IF NOT EXISTS idx_pdg_sections_source ON pdg_sections(source_id, or
 
 
 def ensure_pdg_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(PDG_SCHEMA)
+    for statement in PDG_SCHEMA.strip().split(";"):
+        statement = statement.strip()
+        if statement:
+            conn.execute(statement)
 
 
 def import_pdg_source(
@@ -66,51 +69,52 @@ def import_pdg_source(
     annotated_blocks = annotate_blocks(parsed_blocks, work_title=title)
     sections = _collect_pdg_sections(annotated_blocks, title=title, max_capsule_chars=max_capsule_chars)
 
-    conn.execute("DELETE FROM pdg_sections WHERE source_id = ?", (source_id,))
-    conn.execute(
-        """
-        INSERT INTO pdg_sources (source_id, title, manifest_path, parsed_dir, block_count, capsule_count)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(source_id) DO UPDATE SET
-          title = excluded.title,
-          manifest_path = excluded.manifest_path,
-          parsed_dir = excluded.parsed_dir,
-          block_count = excluded.block_count,
-          capsule_count = excluded.capsule_count,
-          updated_at = CURRENT_TIMESTAMP
-        """,
-        (
-            source_id,
-            title,
-            str(manifest_path),
-            str(dest_dir),
-            len(parsed_blocks),
-            len(sections),
-        ),
-    )
-    for idx, section in enumerate(sections, start=1):
+    with conn:
+        conn.execute("DELETE FROM pdg_sections WHERE source_id = ?", (source_id,))
         conn.execute(
             """
-            INSERT INTO pdg_sections (
-              source_id, parent_title, title, clean_title, path_text, section_kind, level,
-              order_index, page_start, page_end, raw_text, capsule_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO pdg_sources (source_id, title, manifest_path, parsed_dir, block_count, capsule_count)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_id) DO UPDATE SET
+              title = excluded.title,
+              manifest_path = excluded.manifest_path,
+              parsed_dir = excluded.parsed_dir,
+              block_count = excluded.block_count,
+              capsule_count = excluded.capsule_count,
+              updated_at = CURRENT_TIMESTAMP
             """,
             (
                 source_id,
-                section["parent_title"],
-                section["title"],
-                section["clean_title"],
-                section["path_text"],
-                section["section_kind"],
-                section["level"],
-                idx,
-                section["page_start"],
-                section["page_end"],
-                section["raw_text"],
-                section["capsule_text"],
+                title,
+                str(manifest_path),
+                str(dest_dir),
+                len(parsed_blocks),
+                len(sections),
             ),
         )
+        for idx, section in enumerate(sections, start=1):
+            conn.execute(
+                """
+                INSERT INTO pdg_sections (
+                  source_id, parent_title, title, clean_title, path_text, section_kind, level,
+                  order_index, page_start, page_end, raw_text, capsule_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_id,
+                    section["parent_title"],
+                    section["title"],
+                    section["clean_title"],
+                    section["path_text"],
+                    section["section_kind"],
+                    section["level"],
+                    idx,
+                    section["page_start"],
+                    section["page_end"],
+                    section["raw_text"],
+                    section["capsule_text"],
+                ),
+            )
     return {
         "source_id": source_id,
         "title": title,

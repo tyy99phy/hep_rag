@@ -9,7 +9,7 @@ from hep_rag_v2.pipeline import fetch_online_candidates as pipeline_fetch_online
 from hep_rag_v2.pipeline import ingest_online as pipeline_ingest_online
 from hep_rag_v2.pipeline import reparse_cached_pdfs as pipeline_reparse_cached_pdfs
 from hep_rag_v2.pipeline import retrieve as pipeline_retrieve
-from hep_rag_v2.retrieval_adapter import build_retrieval_shell, normalize_retrieval_payload
+from hep_rag_v2.retrieval_adapter import build_retrieval_shell
 from hep_rag_v2.service.inspect import audit_document_payload, show_document_payload, show_graph_payload
 from hep_rag_v2.service.workspace import workspace_status_payload
 
@@ -110,12 +110,9 @@ class HepRagServiceFacade:
         return audit_document_payload(**kwargs)
 
     def _enrich_retrieval_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        typed = normalize_retrieval_payload(payload)
-        registry = EvidenceRegistry()
-        registry.register_retrieval(typed)
         shell = build_retrieval_shell(payload)
         enriched = dict(payload)
-        enriched["typed_retrieval"] = typed.to_payload()
-        enriched["evidence_registry"] = registry.to_payload()
+        enriched["typed_retrieval"] = shell["typed_retrieval"]
+        enriched["evidence_registry"] = shell["evidence_registry"]
         enriched["results"] = shell["results"]
         return enriched

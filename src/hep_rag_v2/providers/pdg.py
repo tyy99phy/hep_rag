@@ -126,12 +126,14 @@ def _download_pdf(
                 response.raise_for_status()
                 temp_path = output_path.with_suffix(output_path.suffix + ".part")
                 first_chunk = b""
+                first_chunk_captured = False
                 with temp_path.open("wb") as handle:
-                    for idx, chunk in enumerate(response.iter_content(chunk_size=1024 * 256)):
+                    for chunk in response.iter_content(chunk_size=1024 * 256):
                         if not chunk:
                             continue
-                        if idx == 0:
+                        if not first_chunk_captured:
                             first_chunk = bytes(chunk)
+                            first_chunk_captured = True
                         handle.write(chunk)
                 if not _looks_like_pdf(response.headers.get("content-type"), first_chunk):
                     temp_path.unlink(missing_ok=True)

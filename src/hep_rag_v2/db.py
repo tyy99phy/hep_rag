@@ -89,6 +89,14 @@ def _ensure_schema_upgrades(conn: sqlite3.Connection) -> None:
             "last_parse_attempt_at": "TEXT",
         },
     )
+    _ensure_columns(
+        conn,
+        "works",
+        {
+            "title_normalized": "TEXT",
+        },
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_works_title_norm ON works(title_normalized)")
 
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:

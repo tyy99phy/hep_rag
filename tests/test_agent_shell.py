@@ -133,7 +133,7 @@ class ServiceFacadeTests(unittest.TestCase):
 
         self.assertEqual(payload["query"], "CMS VBS SSWW")
         self.assertEqual(payload["typed_retrieval"]["metadata"]["target"], "works")
-        self.assertEqual(payload["evidence_registry"][0]["ref"], "W1")
+        self.assertEqual(payload["evidence_registry"]["items"][0]["ref"], "E1")
         retrieve_mock.assert_called_once_with(
             {"retrieval": {}},
             query="CMS VBS SSWW",

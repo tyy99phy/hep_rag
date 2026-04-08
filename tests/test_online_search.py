@@ -85,10 +85,10 @@ class OnlineSearchTests(unittest.TestCase):
         }
 
         with (
-            mock.patch("hep_rag_v2.pipeline._build_llm_client", return_value=_FakeClient(
+            mock.patch("hep_rag_v2.rag._build_llm_client", return_value=_FakeClient(
                 '["CMS same-sign WW WZ jets 13 TeV", "collaboration CMS and (title:\\"same-sign\\" or abstract:\\"same sign\\") and (title:WZ or abstract:WZ) and (title:jets or abstract:jets)"]'
             )),
-            mock.patch("hep_rag_v2.pipeline.search_literature", side_effect=lambda query, **_: search_results[query]),
+            mock.patch("hep_rag_v2.online_search.search_literature", side_effect=lambda query, **_: search_results[query]),
         ):
             hits, search_plan = _search_online_hits(config, query="CMS VBS SSWW", limit=3)
 
@@ -124,7 +124,7 @@ class OnlineSearchTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "hep_rag_v2.pipeline.search_literature",
+            "hep_rag_v2.online_search.search_literature",
             side_effect=lambda query, **_: {
                 "CMS VBS SSWW": [_hit(1847777, "Vector-Boson scattering at the LHC: Unraveling the electroweak sector", doc_types=["review"])],
                 seed_query: [
@@ -146,7 +146,7 @@ class OnlineSearchTests(unittest.TestCase):
         config["llm"]["enabled"] = False
 
         with mock.patch(
-            "hep_rag_v2.pipeline.search_literature",
+            "hep_rag_v2.online_search.search_literature",
             return_value=[
                 _hit(
                     1808672,
@@ -179,7 +179,7 @@ class OnlineSearchTests(unittest.TestCase):
         config["llm"]["enabled"] = False
 
         with mock.patch(
-            "hep_rag_v2.pipeline.search_literature",
+            "hep_rag_v2.online_search.search_literature",
             return_value=[
                 _hit(
                     3000001,
@@ -211,8 +211,8 @@ class OnlineSearchTests(unittest.TestCase):
         structured_query = 'collaboration:"CMS" and collection:Published'
 
         with (
-            mock.patch("hep_rag_v2.pipeline._build_llm_client") as build_client,
-            mock.patch("hep_rag_v2.pipeline.search_literature", return_value=[_hit(1794169, "CMS paper")]) as search,
+            mock.patch("hep_rag_v2.rag._build_llm_client") as build_client,
+            mock.patch("hep_rag_v2.online_search.search_literature", return_value=[_hit(1794169, "CMS paper")]) as search,
         ):
             hits, search_plan = _search_online_hits(config, query=structured_query, limit=5)
 

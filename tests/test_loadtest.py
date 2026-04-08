@@ -11,14 +11,14 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from hep_rag_v2.loadtest import BenchmarkOptions, BenchmarkTier, benchmark_scale, default_scale_tiers
+from hep_rag_v2.loadtest import BenchmarkOptions, BenchmarkTier, _peak_rss_mb, benchmark_scale, default_scale_tiers
 
 
 class LoadtestBenchmarkTests(unittest.TestCase):
     def test_default_scale_tiers_cover_step3_targets(self) -> None:
         tiers = default_scale_tiers()
 
-        self.assertEqual(sorted(tiers), ["10k", "100k", "50k"])
+        self.assertEqual(sorted(tiers), ["10k", "50k", "100k"])
         self.assertEqual(tiers["10k"].work_count, 10_000)
         self.assertEqual(tiers["50k"].work_count, 50_000)
         self.assertEqual(tiers["100k"].work_count, 100_000)
@@ -58,6 +58,13 @@ class LoadtestBenchmarkTests(unittest.TestCase):
             self.assertEqual(payload["tier"], "tiny")
             self.assertEqual(payload["ingest"]["work_count"], 24)
             self.assertEqual(payload["vectors"]["index_rows"], 24)
+            self.assertGreater(payload["ingest"]["rows_written"], 0)
+            self.assertGreater(payload["ingest"]["works_per_second"], 0)
+
+    def test_peak_rss_mb_returns_positive_on_linux(self) -> None:
+        rss = _peak_rss_mb()
+        self.assertGreater(rss, 0.0)
+        self.assertLess(rss, 64 * 1024)
 
 
 if __name__ == "__main__":

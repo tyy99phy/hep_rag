@@ -68,6 +68,7 @@ def upsert_work_from_hit(
         "canonical_source": canonical_source,
         "canonical_id": canonical_id,
         "title": title,
+        "title_normalized": _normalize_family_title(title),
         "abstract": first_abstract(metadata),
         "year": year_from_metadata(metadata),
         "citation_count": _coerce_int(metadata.get("citation_count")),
@@ -82,14 +83,15 @@ def upsert_work_from_hit(
         cur = conn.execute(
             """
             INSERT INTO works (
-              canonical_source, canonical_id, title, abstract, year, citation_count,
+              canonical_source, canonical_id, title, title_normalized, abstract, year, citation_count,
               primary_source_url, primary_pdf_url, raw_metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload["canonical_source"],
                 payload["canonical_id"],
                 payload["title"],
+                payload["title_normalized"],
                 payload["abstract"],
                 payload["year"],
                 payload["citation_count"],
@@ -104,7 +106,7 @@ def upsert_work_from_hit(
         conn.execute(
             """
             UPDATE works
-            SET canonical_source = ?, canonical_id = ?, title = ?, abstract = ?, year = ?,
+            SET canonical_source = ?, canonical_id = ?, title = ?, title_normalized = ?, abstract = ?, year = ?,
                 citation_count = ?, primary_source_url = ?, primary_pdf_url = ?,
                 raw_metadata_json = ?, updated_at = CURRENT_TIMESTAMP
             WHERE work_id = ?
@@ -113,6 +115,7 @@ def upsert_work_from_hit(
                 payload["canonical_source"],
                 payload["canonical_id"],
                 payload["title"],
+                payload["title_normalized"],
                 payload["abstract"],
                 payload["year"],
                 payload["citation_count"],
@@ -952,12 +955,16 @@ def _best_family_match(
     metadata: dict[str, Any],
 ) -> dict[str, Any] | None:
     year = year_from_metadata(metadata)
+    title_norm = _normalize_family_title(first_title(metadata))
     query = """
         SELECT w.work_id, w.title, w.year, w.raw_metadata_json
         FROM works w
         WHERE w.work_id != ?
     """
     params: list[Any] = [work_id]
+    if title_norm:
+        query += " AND w.title_normalized = ?"
+        params.append(title_norm)
     if year is not None:
         query += " AND (w.year BETWEEN ? AND ? OR w.year IS NULL)"
         params.extend([year - 2, year + 2])

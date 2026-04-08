@@ -429,7 +429,7 @@ def search_works_bm25(
     params_tail: list[Any] = []
     if collection:
         sql += " AND ws.collections LIKE ?"
-        params_tail.append(f"%{collection}%")
+        params_tail.append(f"%|{collection}|%")
     sql += " ORDER BY score ASC, year DESC, work_id DESC LIMIT ?"
     return _run_match_queries(
         conn,
@@ -477,7 +477,7 @@ def search_chunks_bm25(
     params_tail: list[Any] = []
     if collection:
         sql += " AND cs.collections LIKE ?"
-        params_tail.append(f"%{collection}%")
+        params_tail.append(f"%|{collection}|%")
     sql += """
         ORDER BY
           score + role_penalty ASC,
@@ -537,7 +537,7 @@ def search_formulas_bm25(
     params_tail: list[Any] = []
     if collection:
         sql += " AND fs.collections LIKE ?"
-        params_tail.append(f"%{collection}%")
+        params_tail.append(f"%|{collection}|%")
     sql += " ORDER BY score ASC, formula_id ASC LIMIT ?"
     rows = _run_match_queries(
         conn,
@@ -600,7 +600,7 @@ def search_assets_bm25(
     params_tail: list[Any] = []
     if collection:
         sql += " AND ats.collections LIKE ?"
-        params_tail.append(f"%{collection}%")
+        params_tail.append(f"%|{collection}|%")
     sql += " ORDER BY score ASC, asset_id ASC LIMIT ?"
     rows = _run_match_queries(
         conn,
@@ -725,7 +725,7 @@ def _aggregate_text_map(conn: sqlite3.Connection, query: str) -> dict[int, str]:
             continue
         mapping[owner_id].append(value)
     return {
-        owner_id: " ".join(values)
+        owner_id: "|" + "|".join(values) + "|"
         for owner_id, values in mapping.items()
     }
 

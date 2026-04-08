@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import platform
 import resource
 import statistics
 import time
@@ -21,7 +22,7 @@ DEFAULT_COLLECTION = "scale-benchmark"
 
 
 class _TierKey(str):
-    _ORDER = {"10k": 0, "100k": 1, "50k": 2}
+    _ORDER = {"10k": 0, "50k": 1, "100k": 2}
 
     def __lt__(self, other: object) -> bool:
         return self._ORDER.get(str(self), 99) < self._ORDER.get(str(other), 99)
@@ -225,7 +226,7 @@ def _peak_rss_mb() -> float:
     usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if usage <= 0:
         return 0.0
-    if usage > 1024 * 1024:
+    if platform.system() == "Darwin":
         return usage / (1024 * 1024)
     return usage / 1024
 

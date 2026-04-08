@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS works (
   canonical_source TEXT NOT NULL,
   canonical_id TEXT NOT NULL,
   title TEXT NOT NULL,
+  title_normalized TEXT,
   abstract TEXT,
   year INTEGER,
   citation_count INTEGER,
@@ -451,6 +452,7 @@ CREATE INDEX IF NOT EXISTS idx_dirty_objects_collection ON dirty_objects(collect
 CREATE INDEX IF NOT EXISTS idx_maintenance_jobs_lane ON maintenance_jobs(lane, status, requested_at);
 CREATE INDEX IF NOT EXISTS idx_works_year ON works(year);
 CREATE INDEX IF NOT EXISTS idx_works_title ON works(title);
+CREATE INDEX IF NOT EXISTS idx_works_title_norm ON works(title_normalized);
 CREATE INDEX IF NOT EXISTS idx_work_ids_work ON work_ids(work_id);
 CREATE INDEX IF NOT EXISTS idx_work_authors_author ON work_authors(author_id);
 CREATE INDEX IF NOT EXISTS idx_work_collaborations_collaboration ON work_collaborations(collaboration_id);

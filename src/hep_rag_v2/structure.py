@@ -46,7 +46,10 @@ CREATE INDEX IF NOT EXISTS idx_work_capsules_collection ON work_capsules(collect
 
 
 def ensure_structure_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA)
+    for statement in SCHEMA.strip().split(";"):
+        statement = statement.strip()
+        if statement:
+            conn.execute(statement)
 
 
 def build_work_structures(
