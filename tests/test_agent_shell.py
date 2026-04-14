@@ -145,6 +145,52 @@ class ServiceFacadeTests(unittest.TestCase):
             progress=None,
         )
 
+    @mock.patch("hep_rag_v2.service.facade.pipeline_retrieve")
+    def test_facade_generate_ideas_returns_ranked_candidates_with_trace(self, retrieve_mock: mock.Mock) -> None:
+        retrieve_mock.return_value = {
+            "query": "same-sign WW transfer ideas",
+            "collection": "default",
+            "requested_target": "works",
+            "routing": {"target": "works", "graph_expand": 1, "reasons": ["manual_target"]},
+            "model": "hash-idf-v1",
+            "works": [
+                {
+                    "work_id": 11,
+                    "raw_title": "Observation of electroweak production of same-sign W boson pairs",
+                    "abstract": "CMS observes same-sign WW production via vector boson scattering.",
+                    "rank": 1,
+                    "hybrid_score": 0.91,
+                    "canonical_source": "inspire",
+                    "canonical_id": "1624170",
+                }
+            ],
+            "evidence_chunks": [
+                {
+                    "chunk_id": 101,
+                    "work_id": 11,
+                    "raw_title": "Observation of electroweak production of same-sign W boson pairs",
+                    "clean_text": "The observed significance exceeds the background expectation.",
+                    "rank": 1,
+                    "hybrid_score": 0.87,
+                    "canonical_source": "inspire",
+                    "canonical_id": "1624170",
+                }
+            ],
+        }
+
+        progress = mock.Mock()
+        facade = HepRagServiceFacade(config={"retrieval": {}, "ideas": {"top_k": 2}}, progress=progress)
+
+        payload = facade.generate_ideas(query="same-sign WW transfer ideas", limit=3)
+
+        self.assertEqual(payload["query"], "same-sign WW transfer ideas")
+        self.assertGreaterEqual(len(payload["ideas"]), 1)
+        self.assertIn("trace", payload)
+        self.assertEqual(payload["trace"]["steps"][0]["step_type"], "retrieve")
+        self.assertEqual(payload["ideas"][0]["object_type"], "idea_candidate")
+        self.assertEqual(payload["evidence_registry"]["items"][0]["object_type"], "idea_candidate")
+        progress.assert_called()
+
 
 class ToolRegistryTests(unittest.TestCase):
     @mock.patch("hep_rag_v2.service.factory.create_facade")

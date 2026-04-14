@@ -86,6 +86,10 @@ class ReparseJobRequest(BaseModel):
     skip_graph: bool = False
 
 
+class GenerateIdeasRequest(QueryRequest):
+    top_k: int | None = Field(default=None, ge=1)
+
+
 
 
 def retrieve(config: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
@@ -339,6 +343,37 @@ def create_app(
         except Exception as exc:
             raise _http_exception_from_error(exc) from exc
 
+    @app.post("/jobs/generate-ideas")
+    def generate_ideas_job(request: Request, body: GenerateIdeasRequest) -> dict[str, Any]:
+        job_manager = _job_manager(request.app)
+        job_id = uuid4().hex
+
+        def _run() -> dict[str, Any]:
+            _, config = _load_runtime_config(request.app)
+            facade = create_facade(config, progress=_reasoning_progress(job_manager, job_id))
+            payload = facade.generate_ideas(
+                query=body.query,
+                limit=body.top_k or body.limit,
+                target=body.target,
+                collection_name=body.collection_name,
+                max_parallelism=body.max_parallelism,
+                model=body.model,
+            )
+            for step in list((payload.get("trace") or {}).get("steps") or []):
+                summary = str(step.get("summary") or step.get("step_type") or "reasoning step")
+                job_manager.append_event(job_id, summary, event_type="reasoning_step", payload=step)
+            return payload
+
+        try:
+            return job_manager.submit(
+                kind="generate_ideas",
+                job_id=job_id,
+                fn=_run,
+                request_payload=body.model_dump(),
+            )
+        except Exception as exc:
+            raise _http_exception_from_error(exc) from exc
+
     @app.get("/jobs/{job_id}")
     def get_job(request: Request, job_id: str) -> dict[str, Any]:
         try:
@@ -517,6 +552,19 @@ def _is_public_path(path: str) -> bool:
     if path in {"/", "/ui", "/health", "/openapi.json", "/auth/status"}:
         return True
     return path.startswith("/docs") or path.startswith("/redoc")
+
+
+def _reasoning_progress(job_manager: BackgroundJobManager, job_id: str) -> Callable[[str], None]:
+    def _callback(message: str) -> None:
+        text = str(message or "").strip()
+        if not text:
+            return
+        event_type = "reasoning_step" if text.lower().startswith("reasoning step:") else "progress"
+        summary = text.split(":", 1)[1].strip() if event_type == "reasoning_step" and ":" in text else text
+        payload = {"step_type": summary.replace(" ", "_")} if event_type == "reasoning_step" else None
+        job_manager.append_event(job_id, text, event_type=event_type, payload=payload)
+
+    return _callback
 
 
 def _ui_enabled(app: FastAPI) -> bool:

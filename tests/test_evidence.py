@@ -79,6 +79,35 @@ class TestEvidenceRegistry(unittest.TestCase):
         self.assertEqual(rendered[1]["citation_id"], "E2")
         self.assertEqual(rendered[1]["section_hint"], "4 Results")
 
+    def test_register_retrieval_includes_typed_objects(self) -> None:
+        registry = EvidenceRegistry()
+
+        entries = registry.register_retrieval(
+            {
+                "query": "vector boson scattering anomalies",
+                "result_objects": [
+                    {
+                        "result_id": 41,
+                        "title": "Same-sign WW excess in fiducial region",
+                        "summary": "Observed fiducial cross section is above the SM central value.",
+                        "score": 0.93,
+                    }
+                ],
+                "idea_candidates": [
+                    {
+                        "idea_id": "idea-1",
+                        "title": "Revisit EFT operators with same-sign WW tails",
+                        "summary": "Use the excess-like feature as the seed for a transfer study.",
+                        "score": 0.71,
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual([item.result.object_type for item in entries], ["result_object", "idea_candidate"])
+        self.assertEqual([item.citation_id for item in entries], ["E1", "E2"])
+        self.assertEqual(registry.to_payload()[1]["evidence_key"], "idea_candidate:idea-1")
+
 
 if __name__ == "__main__":
     unittest.main()

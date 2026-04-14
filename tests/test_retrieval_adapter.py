@@ -15,7 +15,9 @@ from hep_rag_v2.retrieval_adapter import (
     TypedRetrievalMetadata,
     TypedRetrievalResult,
     adapt_chunk_hit,
+    build_retrieval_shell,
     adapt_work_hit,
+    normalize_retrieval_payload,
 )
 
 
@@ -100,6 +102,49 @@ class TestRetrievalAdapter(unittest.TestCase):
         self.assertEqual(result.metadata.lane, "chunks")
         self.assertEqual(result.metadata.rank, 1)
         self.assertEqual(result.metadata.family_id, 77)
+
+    def test_normalize_payload_includes_typed_reasoning_objects(self) -> None:
+        payload = {
+            "query": "vector boson scattering anomalies",
+            "collection": "default",
+            "requested_target": "result_object",
+            "routing": {
+                "target": "result_object",
+                "graph_expand": 1,
+                "reasons": ["manual_target"],
+            },
+            "result_objects": [
+                {
+                    "result_id": 41,
+                    "title": "Same-sign WW excess in fiducial region",
+                    "summary": "Observed fiducial cross section is above the SM central value.",
+                    "canonical_source": "inspire",
+                    "canonical_id": "1624170",
+                    "score": 0.93,
+                    "rank": 1,
+                }
+            ],
+            "method_objects": [
+                {
+                    "method_id": 17,
+                    "title": "Matrix-element unfolding",
+                    "summary": "Differential measurements use matrix-element-inspired unfolding.",
+                    "score": 0.74,
+                    "rank": 2,
+                }
+            ],
+        }
+
+        typed = normalize_retrieval_payload(payload)
+
+        self.assertEqual(typed.metadata.target, "result_object")
+        self.assertEqual(len(typed.typed_objects), 2)
+        self.assertEqual([item.object_type for item in typed.typed_objects], ["result_object", "method_object"])
+        self.assertEqual(typed.primary_items()[0].object_type, "result_object")
+
+        shell = build_retrieval_shell(payload)
+        self.assertEqual([item["object_type"] for item in shell["results"]], ["result_object", "method_object"])
+        self.assertEqual(shell["evidence_registry"]["items"][0]["evidence_key"], "result_object:41")
 
 
 if __name__ == "__main__":

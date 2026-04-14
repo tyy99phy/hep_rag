@@ -51,6 +51,11 @@ def build_default_tool_registry(facade: Any) -> ToolRegistry:
         handler=lambda *, query: facade.ask(query=query),
     )
     registry.register(
+        name="generate_ideas",
+        description="Generate ranked idea candidates with a structured reasoning trace.",
+        handler=lambda *, query: facade.generate_ideas(query=query),
+    )
+    registry.register(
         name="workspace_status",
         description="Inspect workspace status and index counts.",
         handler=lambda: facade.workspace_status(),

@@ -7,6 +7,7 @@ from hep_rag_v2.retrieval_adapter import (
     TypedRetrievalItem,
     TypedRetrievalResult,
     adapt_chunk_hit,
+    adapt_typed_hit,
     adapt_work_hit,
     normalize_retrieval_payload,
 )
@@ -118,6 +119,8 @@ class EvidenceRegistry:
     def register_retrieval(self, payload: Mapping[str, Any] | TypedRetrievalResult) -> list[EvidenceEntry]:
         typed = payload if isinstance(payload, TypedRetrievalResult) else normalize_retrieval_payload(payload)
         out: list[EvidenceEntry] = []
+        for item in typed.typed_objects:
+            out.append(self.register(item))
         for item in typed.works:
             out.append(self.register_work(item))
         for item in typed.chunks:
@@ -149,6 +152,15 @@ def build_evidence_registry(payload: Mapping[str, Any] | TypedRetrievalResult) -
 def _coerce_result(item: Mapping[str, Any] | TypedRetrievalResult) -> TypedRetrievalResult:
     if isinstance(item, TypedRetrievalResult):
         return item
+    object_type = str(item.get("object_type") or item.get("source_type") or "").strip()
+    typed_specs = {
+        "result_object": "result_id",
+        "method_object": "method_id",
+        "transfer_candidate": "transfer_id",
+        "idea_candidate": "idea_id",
+    }
+    if object_type in typed_specs:
+        return adapt_typed_hit(item, object_type=object_type, id_field=typed_specs[object_type])
     if item.get("object_type") == "chunk" or item.get("source_type") == "chunk":
         return adapt_chunk_hit(item)
     if "chunk_id" in item or "clean_text" in item or "section_hint" in item:

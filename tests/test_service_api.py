@@ -242,6 +242,50 @@ class ApiLayerTests(unittest.TestCase):
         finally:
             paths.set_workspace_root(original_root)
 
+    def test_generate_ideas_job_records_trace_and_result(self) -> None:
+        original_root = paths.workspace_root()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                tmp = Path(td)
+                app = create_app(config_loader=_api_config_loader(tmp))
+                facade = mock.Mock()
+                facade.generate_ideas.return_value = {
+                    "query": "same-sign WW transfer ideas",
+                    "ideas": [
+                        {
+                            "object_type": "idea_candidate",
+                            "object_id": "idea_candidate:idea-1",
+                            "title": "Revisit EFT operators with same-sign WW tails",
+                            "score": 0.82,
+                        }
+                    ],
+                    "trace": {
+                        "steps": [
+                            {"step_type": "retrieve", "summary": "retrieved supporting evidence"},
+                            {"step_type": "generate_idea", "summary": "ranked idea candidates"},
+                        ]
+                    },
+                    "evidence_registry": {"items": []},
+                }
+                with TestClient(app) as client, mock.patch(
+                    "hep_rag_v2.api.app.create_facade",
+                    return_value=facade,
+                ):
+                    response = client.post("/jobs/generate-ideas", json={"query": "same-sign WW transfer ideas", "limit": 2})
+                    self.assertEqual(response.status_code, 200)
+                    job_id = response.json()["job_id"]
+
+                    payload = _wait_for_job(client, job_id)
+                    self.assertEqual(payload["status"], "succeeded")
+                    self.assertEqual(payload["result"]["ideas"][0]["object_type"], "idea_candidate")
+                    self.assertEqual(payload["result"]["trace"]["steps"][0]["step_type"], "retrieve")
+
+                    events = client.get(f"/jobs/{job_id}/events").json()["events"]
+                    self.assertTrue(any(item["type"] == "reasoning_step" for item in events), msg=events)
+                    facade.generate_ideas.assert_called_once()
+        finally:
+            paths.set_workspace_root(original_root)
+
     def test_progress_events_do_not_fail_job_when_main_db_is_write_locked(self) -> None:
         def _fake_ingest(
             config,

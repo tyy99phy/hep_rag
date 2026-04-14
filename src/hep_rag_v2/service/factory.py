@@ -49,6 +49,18 @@ def create_tool_registry(
         ),
     )
     registry.register(
+        name="generate_ideas",
+        description="Generate ranked idea candidates with a structured reasoning trace.",
+        handler=lambda *, query: facade.generate_ideas(
+            query=query,
+            collection_name=collection_name,
+            target=target,
+            limit=limit,
+            max_parallelism=max_parallelism,
+            model=model,
+        ),
+    )
+    registry.register(
         name="workspace_status",
         description="Inspect workspace status and index counts.",
         handler=lambda: facade.workspace_status(),

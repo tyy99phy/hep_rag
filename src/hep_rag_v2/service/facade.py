@@ -82,6 +82,61 @@ class HepRagServiceFacade:
         enriched["evidence_registry"] = registry.to_payload()
         return enriched
 
+    def generate_ideas(
+        self,
+        *,
+        query: str,
+        limit: int | None = None,
+        target: str | None = None,
+        collection_name: str | None = None,
+        max_parallelism: int | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        retrieval = self.retrieve(
+            query=query,
+            limit=limit,
+            target=target,
+            collection_name=collection_name,
+            max_parallelism=max_parallelism,
+            model=model,
+        )
+        trace_steps: list[dict[str, Any]] = [
+            {
+                "step_type": "retrieve",
+                "summary": f"retrieved {len(retrieval.get('results') or [])} evidence items",
+                "target": (retrieval.get("typed_retrieval") or {}).get("metadata", {}).get("target"),
+            }
+        ]
+        if self.progress is not None:
+            self.progress("reasoning step: retrieve")
+
+        idea_limit = max(1, int((self.config.get("ideas") or {}).get("top_k") or limit or 3))
+        ideas = _rank_idea_candidates(retrieval, limit=idea_limit)
+        trace_steps.append(
+            {
+                "step_type": "generate_idea",
+                "summary": f"ranked {len(ideas)} idea candidates",
+                "idea_ids": [item["object_id"] for item in ideas],
+            }
+        )
+        if self.progress is not None:
+            self.progress("reasoning step: generate_idea")
+
+        registry = EvidenceRegistry()
+        registry.register_many(ideas)
+        payload = {
+            "query": query,
+            "ideas": ideas,
+            "trace": {"steps": trace_steps},
+            "retrieval": {
+                "query": retrieval.get("query"),
+                "results": retrieval.get("results"),
+                "typed_retrieval": retrieval.get("typed_retrieval"),
+            },
+            "evidence_registry": registry.export(),
+        }
+        return payload
+
     def fetch_papers(self, *, query: str, limit: int, max_parallelism: int | None = None) -> dict[str, Any]:
         return pipeline_fetch_online_candidates(
             self.config,
@@ -116,3 +171,32 @@ class HepRagServiceFacade:
         enriched["evidence_registry"] = shell["evidence_registry"]
         enriched["results"] = shell["results"]
         return enriched
+
+
+def _rank_idea_candidates(retrieval: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+    results = list(retrieval.get("results") or [])
+    ideas: list[dict[str, Any]] = []
+    for index, item in enumerate(results[: max(1, limit)], start=1):
+        title = str(item.get("title") or item.get("object_id") or f"Idea {index}").strip()
+        evidence_key = str(item.get("citation") or item.get("object_id") or "")
+        score = float(item.get("score") or 0.0)
+        ideas.append(
+            {
+                "source_type": "idea_candidate",
+                "object_type": "idea_candidate",
+                "object_id": f"idea_candidate:idea-{index}",
+                "evidence_key": f"idea_candidate:idea-{index}",
+                "title": f"Hypothesis from {title}",
+                "content": (
+                    f"Investigate whether {title.lower()} can transfer to a new analysis lane "
+                    f"using evidence anchored in {evidence_key or 'retrieved evidence'}."
+                ),
+                "score": round(min(1.0, 0.45 + (score * 0.5)), 3),
+                "metadata": {
+                    "source_object_id": item.get("object_id"),
+                    "source_object_type": item.get("object_type"),
+                    "evidence_refs": [evidence_key] if evidence_key else [],
+                },
+            }
+        )
+    return ideas

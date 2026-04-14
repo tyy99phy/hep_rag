@@ -93,13 +93,15 @@ class RetrievalShellTests(unittest.TestCase):
         facade = mock.Mock()
         facade.retrieve.return_value = {"query": "q", "results": []}
         facade.ask.return_value = {"query": "q", "answer": "ok"}
+        facade.generate_ideas.return_value = {"query": "q", "ideas": []}
         facade.workspace_status.return_value = {"snapshot": {"works": 0}}
 
         registry = build_default_tool_registry(facade)
 
-        self.assertEqual(sorted(registry.names()), ["ask", "retrieve", "workspace_status"])
+        self.assertEqual(sorted(registry.names()), ["ask", "generate_ideas", "retrieve", "workspace_status"])
         self.assertEqual(registry.invoke("retrieve", query="q"), {"query": "q", "results": []})
         self.assertEqual(registry.invoke("ask", query="q"), {"query": "q", "answer": "ok"})
+        self.assertEqual(registry.invoke("generate_ideas", query="q"), {"query": "q", "ideas": []})
         self.assertEqual(registry.invoke("workspace_status"), {"snapshot": {"works": 0}})
 
 
