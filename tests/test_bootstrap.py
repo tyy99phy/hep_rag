@@ -69,6 +69,14 @@ class TestBootstrap(unittest.TestCase):
                 "citations",
                 "documents",
                 "chunks",
+                "result_objects",
+                "method_objects",
+                "transfer_candidates",
+                "reasoning_sessions",
+                "reasoning_steps",
+                "idea_candidates",
+                "idea_scores",
+                "idea_evidence_links",
             ):
                 self.assertIn(required, names)
 

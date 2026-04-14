@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 
-DERIVED_LANES = ("search", "vectors", "graph")
+DERIVED_LANES = ("search", "vectors", "graph", "structure", "results", "methods", "transfer")
 
 
 def ensure_maintenance_schema(conn: sqlite3.Connection) -> None:

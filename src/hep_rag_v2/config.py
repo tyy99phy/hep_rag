@@ -163,6 +163,29 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "chunk_limit": 12,
         "answer_evidence_limit": 6,
     },
+    "reasoning": {
+        "trace_persistence": "structured_summary",
+        "store_raw_fragments": False,
+        "max_steps": 24,
+        "session_timeout_sec": 900,
+    },
+    "ideas": {
+        "max_candidates": 8,
+        "max_evidence_links": 6,
+        "score_axes": [
+            "physics_novelty",
+            "method_novelty",
+            "feasibility",
+            "evidence_coverage",
+            "consensus",
+        ],
+    },
+    "transfer": {
+        "max_candidates": 8,
+        "max_edges_per_candidate": 4,
+        "min_score": 0.0,
+        "require_evidence": True,
+    },
     "api": {
         "auth_token": "",
         "enable_ui": True,

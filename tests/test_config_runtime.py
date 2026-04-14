@@ -70,6 +70,19 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(config["api"]["job_max_workers"], 2)
         self.assertEqual(config["api"]["job_max_events"], 1000)
         self.assertTrue(config["api"]["enable_ui"])
+        self.assertEqual(config["reasoning"]["trace_persistence"], "structured_summary")
+        self.assertFalse(config["reasoning"]["store_raw_fragments"])
+        self.assertEqual(
+            config["ideas"]["score_axes"],
+            [
+                "physics_novelty",
+                "method_novelty",
+                "feasibility",
+                "evidence_coverage",
+                "consensus",
+            ],
+        )
+        self.assertTrue(config["transfer"]["require_evidence"])
         self.assertEqual(config["modes"]["build"], "full")
         self.assertEqual(config["modes"]["retrieval"], "hybrid")
         self.assertEqual(config["build"]["structure_backend"], "api_llm")
@@ -111,6 +124,9 @@ class ConfigRuntimeTests(unittest.TestCase):
                 config["modes"]["retrieval"] = "structure_only"
                 config["profiles"]["embedding"] = "semantic_small_local"
                 config["build"]["allow_silent_fallback"] = False
+                config["reasoning"]["trace_persistence"] = "structured_summary"
+                config["ideas"]["max_candidates"] = 5
+                config["transfer"]["min_score"] = 0.25
                 save_config(config, config_path)
 
                 loaded_path, loaded = apply_runtime_config(config_path=config_path)
@@ -119,6 +135,9 @@ class ConfigRuntimeTests(unittest.TestCase):
                 self.assertEqual(loaded["modes"]["retrieval"], "structure_only")
                 self.assertEqual(loaded["profiles"]["embedding"], "semantic_small_local")
                 self.assertFalse(loaded["build"]["allow_silent_fallback"])
+                self.assertEqual(loaded["reasoning"]["trace_persistence"], "structured_summary")
+                self.assertEqual(loaded["ideas"]["max_candidates"], 5)
+                self.assertEqual(loaded["transfer"]["min_score"], 0.25)
                 self.assertEqual(resolve_embedding_profile(loaded)["name"], "semantic_small_local")
         finally:
             paths.set_workspace_root(original_root)
@@ -262,6 +281,24 @@ class CliRuntimeTests(unittest.TestCase):
                 self.assertEqual(payload["collection"]["config_path"], str(collection_config))
         finally:
             paths.set_workspace_root(original)
+
+    def test_benchmark_manifest_command_writes_thinking_engine_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            output_path = tmp_path / "thinking-engine-manifest.json"
+
+            parser = build_parser()
+            args = parser.parse_args(["benchmark-manifest", "--output", str(output_path), "--model-label", "tiny-model"])
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                args.func(args)
+
+            payload = json.loads(buffer.getvalue())
+            self.assertEqual(payload["model_label"], "tiny-model")
+            self.assertEqual(payload["scenario_count"], 4)
+            self.assertTrue(output_path.exists())
+            written = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(written["scenarios"][-1]["name"], "thinking_engine_trace")
 
 
 if __name__ == "__main__":

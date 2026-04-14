@@ -39,11 +39,39 @@ CREATE TABLE IF NOT EXISTS graph_build_runs (
   finished_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS dirty_objects (
+  dirty_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lane TEXT NOT NULL,
+  object_kind TEXT NOT NULL,
+  object_id INTEGER NOT NULL,
+  collection_id INTEGER,
+  reason TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(lane, object_kind, object_id),
+  FOREIGN KEY (collection_id) REFERENCES collections(collection_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_jobs (
+  job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lane TEXT NOT NULL,
+  status TEXT NOT NULL,
+  scope TEXT,
+  collection_name TEXT,
+  updated_since TEXT,
+  details_json TEXT,
+  requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  finished_at TEXT,
+  result_json TEXT
+);
+
 CREATE TABLE IF NOT EXISTS works (
   work_id INTEGER PRIMARY KEY AUTOINCREMENT,
   canonical_source TEXT NOT NULL,
   canonical_id TEXT NOT NULL,
   title TEXT NOT NULL,
+  title_normalized TEXT,
   abstract TEXT,
   year INTEGER,
   citation_count INTEGER,
@@ -147,6 +175,32 @@ CREATE TABLE IF NOT EXISTS collection_works (
   FOREIGN KEY (work_id) REFERENCES works(work_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS work_families (
+  family_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  family_key TEXT NOT NULL UNIQUE,
+  label TEXT,
+  primary_work_id INTEGER,
+  relation_kind TEXT NOT NULL DEFAULT 'standalone',
+  confidence REAL,
+  reason_json TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (primary_work_id) REFERENCES works(work_id)
+);
+
+CREATE TABLE IF NOT EXISTS work_family_members (
+  family_id INTEGER NOT NULL,
+  work_id INTEGER NOT NULL UNIQUE,
+  member_role TEXT NOT NULL DEFAULT 'standalone',
+  confidence REAL,
+  reason_json TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (family_id, work_id),
+  FOREIGN KEY (family_id) REFERENCES work_families(family_id) ON DELETE CASCADE,
+  FOREIGN KEY (work_id) REFERENCES works(work_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS citations (
   citation_id INTEGER PRIMARY KEY AUTOINCREMENT,
   src_work_id INTEGER NOT NULL,
@@ -217,6 +271,8 @@ CREATE TABLE IF NOT EXISTS documents (
   parse_status TEXT NOT NULL DEFAULT 'registered',
   parsed_dir TEXT,
   manifest_path TEXT,
+  parse_error TEXT,
+  last_parse_attempt_at TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (work_id) REFERENCES works(work_id) ON DELETE CASCADE
@@ -342,14 +398,260 @@ CREATE TABLE IF NOT EXISTS chunk_topic_mentions (
   FOREIGN KEY (topic_id) REFERENCES topics(topic_id)
 );
 
+CREATE TABLE IF NOT EXISTS work_capsules (
+  capsule_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL UNIQUE,
+  collection_id INTEGER,
+  profile TEXT NOT NULL DEFAULT 'default',
+  builder TEXT,
+  is_review INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  capsule_text TEXT NOT NULL,
+  result_signature_json TEXT NOT NULL DEFAULT '[]',
+  method_signature_json TEXT NOT NULL DEFAULT '[]',
+  anomaly_code TEXT,
+  anomaly_detail TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (work_id) REFERENCES works(work_id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id) REFERENCES collections(collection_id) ON DELETE SET NULL
+);
+
+
+CREATE TABLE IF NOT EXISTS result_objects (
+  result_object_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL,
+  collection_id INTEGER,
+  object_key TEXT,
+  label TEXT NOT NULL,
+  result_kind TEXT,
+  summary_text TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'extracted',
+  confidence REAL,
+  signature_json TEXT NOT NULL DEFAULT '[]',
+  evidence_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (work_id) REFERENCES works(work_id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id) REFERENCES collections(collection_id) ON DELETE SET NULL,
+  UNIQUE(work_id, object_key)
+);
+
+CREATE TABLE IF NOT EXISTS result_values (
+  result_value_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  result_object_id INTEGER NOT NULL,
+  value_label TEXT NOT NULL,
+  value_text TEXT,
+  numeric_value REAL,
+  unit_text TEXT,
+  comparator TEXT,
+  uncertainty_text TEXT,
+  context_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (result_object_id) REFERENCES result_objects(result_object_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS result_context (
+  result_context_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  result_object_id INTEGER NOT NULL,
+  section_hint TEXT,
+  dataset_hint TEXT,
+  selection_hint TEXT,
+  raw_context_json TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (result_object_id) REFERENCES result_objects(result_object_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS method_objects (
+  method_object_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL,
+  collection_id INTEGER,
+  object_key TEXT,
+  name TEXT NOT NULL,
+  method_family TEXT,
+  summary_text TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'extracted',
+  signature_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (work_id) REFERENCES works(work_id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id) REFERENCES collections(collection_id) ON DELETE SET NULL,
+  UNIQUE(work_id, object_key)
+);
+
+CREATE TABLE IF NOT EXISTS method_signatures (
+  method_signature_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  method_object_id INTEGER NOT NULL,
+  signature_kind TEXT NOT NULL,
+  signature_text TEXT NOT NULL,
+  normalized_text TEXT,
+  raw_signature_json TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (method_object_id) REFERENCES method_objects(method_object_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS method_application_links (
+  method_application_link_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  method_object_id INTEGER NOT NULL,
+  result_object_id INTEGER,
+  target_work_id INTEGER,
+  relation_kind TEXT NOT NULL DEFAULT 'applied_to',
+  confidence REAL,
+  notes TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (method_object_id) REFERENCES method_objects(method_object_id) ON DELETE CASCADE,
+  FOREIGN KEY (result_object_id) REFERENCES result_objects(result_object_id) ON DELETE SET NULL,
+  FOREIGN KEY (target_work_id) REFERENCES works(work_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS transfer_candidates (
+  transfer_candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_method_object_id INTEGER,
+  source_result_object_id INTEGER,
+  target_work_id INTEGER,
+  target_context_json TEXT NOT NULL DEFAULT '{}',
+  rationale_text TEXT,
+  status TEXT NOT NULL DEFAULT 'proposed',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (source_method_object_id) REFERENCES method_objects(method_object_id) ON DELETE SET NULL,
+  FOREIGN KEY (source_result_object_id) REFERENCES result_objects(result_object_id) ON DELETE SET NULL,
+  FOREIGN KEY (target_work_id) REFERENCES works(work_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS transfer_edges (
+  transfer_edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  transfer_candidate_id INTEGER NOT NULL,
+  src_method_object_id INTEGER,
+  dst_work_id INTEGER,
+  edge_kind TEXT NOT NULL DEFAULT 'candidate',
+  score REAL,
+  evidence_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (transfer_candidate_id) REFERENCES transfer_candidates(transfer_candidate_id) ON DELETE CASCADE,
+  FOREIGN KEY (src_method_object_id) REFERENCES method_objects(method_object_id) ON DELETE SET NULL,
+  FOREIGN KEY (dst_work_id) REFERENCES works(work_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS reasoning_sessions (
+  reasoning_session_id TEXT PRIMARY KEY,
+  collection_id INTEGER,
+  request_kind TEXT NOT NULL,
+  request_json TEXT NOT NULL DEFAULT '{}',
+  trace_mode TEXT NOT NULL DEFAULT 'structured_summary',
+  raw_trace_enabled INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'created',
+  started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  finished_at TEXT,
+  FOREIGN KEY (collection_id) REFERENCES collections(collection_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS reasoning_steps (
+  reasoning_step_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reasoning_session_id TEXT NOT NULL,
+  step_index INTEGER NOT NULL,
+  step_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'recorded',
+  summary_text TEXT NOT NULL DEFAULT '',
+  model_name TEXT,
+  object_refs_json TEXT NOT NULL DEFAULT '[]',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (reasoning_session_id) REFERENCES reasoning_sessions(reasoning_session_id) ON DELETE CASCADE,
+  UNIQUE(reasoning_session_id, step_index)
+);
+
+CREATE TABLE IF NOT EXISTS reasoning_artifacts (
+  reasoning_artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reasoning_session_id TEXT NOT NULL,
+  reasoning_step_id INTEGER,
+  artifact_kind TEXT NOT NULL,
+  artifact_key TEXT,
+  artifact_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (reasoning_session_id) REFERENCES reasoning_sessions(reasoning_session_id) ON DELETE CASCADE,
+  FOREIGN KEY (reasoning_step_id) REFERENCES reasoning_steps(reasoning_step_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS idea_candidates (
+  idea_candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reasoning_session_id TEXT,
+  title TEXT NOT NULL,
+  hypothesis_text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  rank_order INTEGER,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (reasoning_session_id) REFERENCES reasoning_sessions(reasoning_session_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS idea_scores (
+  idea_score_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  idea_candidate_id INTEGER NOT NULL,
+  score_axis TEXT NOT NULL,
+  score_value REAL NOT NULL,
+  scorer_kind TEXT NOT NULL DEFAULT 'heuristic',
+  rationale_text TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (idea_candidate_id) REFERENCES idea_candidates(idea_candidate_id) ON DELETE CASCADE,
+  UNIQUE(idea_candidate_id, score_axis, scorer_kind)
+);
+
+CREATE TABLE IF NOT EXISTS idea_evidence_links (
+  idea_evidence_link_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  idea_candidate_id INTEGER NOT NULL,
+  evidence_kind TEXT NOT NULL,
+  evidence_id TEXT NOT NULL,
+  supports INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (idea_candidate_id) REFERENCES idea_candidates(idea_candidate_id) ON DELETE CASCADE,
+  UNIQUE(idea_candidate_id, evidence_kind, evidence_id)
+);
+
+CREATE TABLE IF NOT EXISTS pdg_sources (
+  source_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  manifest_path TEXT,
+  parsed_dir TEXT,
+  block_count INTEGER NOT NULL DEFAULT 0,
+  capsule_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pdg_sections (
+  pdg_section_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id TEXT NOT NULL,
+  parent_title TEXT,
+  title TEXT NOT NULL,
+  clean_title TEXT,
+  path_text TEXT,
+  section_kind TEXT NOT NULL DEFAULT 'body',
+  level INTEGER NOT NULL DEFAULT 1,
+  order_index INTEGER NOT NULL DEFAULT 0,
+  page_start INTEGER,
+  page_end INTEGER,
+  raw_text TEXT,
+  capsule_text TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (source_id) REFERENCES pdg_sources(source_id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_collections_name ON collections(name);
+CREATE INDEX IF NOT EXISTS idx_dirty_objects_lane ON dirty_objects(lane, object_kind, updated_at);
+CREATE INDEX IF NOT EXISTS idx_dirty_objects_collection ON dirty_objects(collection_id, lane);
+CREATE INDEX IF NOT EXISTS idx_maintenance_jobs_lane ON maintenance_jobs(lane, status, requested_at);
 CREATE INDEX IF NOT EXISTS idx_works_year ON works(year);
 CREATE INDEX IF NOT EXISTS idx_works_title ON works(title);
+CREATE INDEX IF NOT EXISTS idx_works_title_norm ON works(title_normalized);
 CREATE INDEX IF NOT EXISTS idx_work_ids_work ON work_ids(work_id);
 CREATE INDEX IF NOT EXISTS idx_work_authors_author ON work_authors(author_id);
 CREATE INDEX IF NOT EXISTS idx_work_collaborations_collaboration ON work_collaborations(collaboration_id);
 CREATE INDEX IF NOT EXISTS idx_work_topics_topic ON work_topics(topic_id);
 CREATE INDEX IF NOT EXISTS idx_collection_works_work ON collection_works(work_id);
+CREATE INDEX IF NOT EXISTS idx_work_families_primary ON work_families(primary_work_id);
+CREATE INDEX IF NOT EXISTS idx_work_family_members_family ON work_family_members(family_id);
 CREATE INDEX IF NOT EXISTS idx_citations_src ON citations(src_work_id);
 CREATE INDEX IF NOT EXISTS idx_citations_dst_external ON citations(dst_source, dst_external_id);
 CREATE INDEX IF NOT EXISTS idx_citations_dst_work ON citations(dst_work_id);
@@ -358,5 +660,14 @@ CREATE INDEX IF NOT EXISTS idx_sections_document ON document_sections(document_i
 CREATE INDEX IF NOT EXISTS idx_blocks_document ON blocks(document_id);
 CREATE INDEX IF NOT EXISTS idx_formulas_document ON formulas(document_id);
 CREATE INDEX IF NOT EXISTS idx_assets_document ON assets(document_id);
+CREATE INDEX IF NOT EXISTS idx_work_capsules_collection ON work_capsules(collection_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_result_objects_work ON result_objects(work_id, status);
+CREATE INDEX IF NOT EXISTS idx_method_objects_work ON method_objects(work_id, status);
+CREATE INDEX IF NOT EXISTS idx_transfer_candidates_target ON transfer_candidates(target_work_id, status);
+CREATE INDEX IF NOT EXISTS idx_reasoning_sessions_status ON reasoning_sessions(status, started_at);
+CREATE INDEX IF NOT EXISTS idx_reasoning_steps_session ON reasoning_steps(reasoning_session_id, step_index);
+CREATE INDEX IF NOT EXISTS idx_idea_candidates_session ON idea_candidates(reasoning_session_id, rank_order);
+CREATE INDEX IF NOT EXISTS idx_pdg_sections_source ON pdg_sections(source_id, order_index);
 CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_work ON chunks(work_id);

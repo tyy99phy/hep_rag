@@ -10,7 +10,10 @@ from typing import Any, Callable
 from hep_rag_v2 import paths
 from hep_rag_v2.config import runtime_collection_config
 from hep_rag_v2.db import connect, ensure_db
-from hep_rag_v2.maintenance import mark_work_dirty
+from hep_rag_v2.maintenance import clear_dirty_work_ids, mark_work_dirty
+from hep_rag_v2.methods import build_method_objects
+from hep_rag_v2.results import build_result_objects
+from hep_rag_v2.transfer import build_transfer_candidates
 from hep_rag_v2.metadata import (
     canonical_identity,
     first_arxiv_id,
@@ -101,16 +104,41 @@ def _queue_derived_maintenance(
     reason: str,
 ) -> dict[str, Any]:
     queued = 0
-    for work_id in work_ids:
-        for lane in ("search", "vectors", "graph", "structure"):
-            mark_work_dirty(conn, lane=lane, work_id=work_id, collection_id=collection_id, reason=reason)
-            queued += 1
+    lanes = ("search", "vectors", "graph", "structure", "results", "methods", "transfer")
+    for lane in lanes:
+        mark_work_dirty(
+            conn,
+            work_ids=work_ids,
+            lanes=[lane],
+            collection_id=collection_id,
+            reason=reason,
+        )
+        queued += len(work_ids)
     from hep_rag_v2.maintenance import dirty_counts
     dirty = dirty_counts(conn)
     return {
         "queued": queued,
         "dirty": dirty,
     }
+
+
+def _sync_thinking_engine_extractions(
+    conn: sqlite3.Connection,
+    *,
+    collection_name: str,
+    work_ids: list[int],
+) -> dict[str, Any]:
+    if not work_ids:
+        return {"results": None, "methods": None, "transfer": None}
+    summaries = {
+        "results": build_result_objects(conn, work_ids=work_ids, collection=collection_name),
+        "methods": build_method_objects(conn, work_ids=work_ids, collection=collection_name),
+        "transfer": build_transfer_candidates(conn, work_ids=work_ids, collection=collection_name),
+    }
+    clear_dirty_work_ids(conn, lane="results", collection=collection_name, work_ids=work_ids)
+    clear_dirty_work_ids(conn, lane="methods", collection=collection_name, work_ids=work_ids)
+    clear_dirty_work_ids(conn, lane="transfer", collection=collection_name, work_ids=work_ids)
+    return summaries
 
 
 def _annotate_hits_with_local_status(
@@ -302,6 +330,7 @@ def ingest_online(
         "search": None,
         "vectors": None,
         "graph": None,
+        "thinking": None,
         "maintenance": None,
     }
 
@@ -390,9 +419,13 @@ def ingest_online(
             if parse_cap > 0 and mineru_client is not None:
                 _emit_progress(progress, f"MinerU phase finished: {summary['mineru']['materialized']}/{summary['mineru']['attempted']} succeeded, {summary['mineru']['failed']} failed.")
 
-            summary["maintenance"] = _queue_derived_maintenance(conn, collection_id=collection_id, collection_name=collection_payload["name"], work_ids=sorted(touched_work_ids), reason="ingest_online")
+            touched_ids = sorted(touched_work_ids)
+            summary["maintenance"] = _queue_derived_maintenance(conn, collection_id=collection_id, collection_name=collection_payload["name"], work_ids=touched_ids, reason="ingest_online")
+            summary["thinking"] = _sync_thinking_engine_extractions(conn, collection_name=collection_payload["name"], work_ids=touched_ids)
             if summary["maintenance"]["queued"]:
                 _emit_progress(progress, f"queued maintenance instead of auto rebuild: {summary['maintenance']['dirty']}")
+            if summary["thinking"]:
+                _emit_progress(progress, f"updated thinking-engine substrate for {len(touched_ids)} works.")
             if skip_index or skip_graph:
                 _emit_progress(progress, "legacy skip-index/skip-graph flags are now no-op because ingest no longer auto rebuilds derived lanes.")
 
@@ -427,7 +460,7 @@ def reparse_cached_pdfs(
         "collection": collection_payload["name"],
         "selection": {"limit": limit, "work_ids": list(work_ids or []), "replace_existing": bool(replace_existing)},
         "candidates_seen": 0, "attempted": 0, "materialized": 0, "failed": 0, "skipped": 0, "items": [],
-        "search": None, "vectors": None, "graph": None, "maintenance": None,
+        "search": None, "vectors": None, "graph": None, "thinking": None, "maintenance": None,
     }
 
     with connect() as conn:
@@ -456,9 +489,13 @@ def reparse_cached_pdfs(
         if candidates:
             _emit_progress(progress, f"MinerU reparse phase finished: {summary['materialized']}/{summary['attempted']} succeeded, {summary['failed']} failed.")
 
-        summary["maintenance"] = _queue_derived_maintenance(conn, collection_id=collection_id, collection_name=collection_payload["name"], work_ids=sorted(touched_work_ids), reason="reparse_cached_pdfs")
+        touched_ids = sorted(touched_work_ids)
+        summary["maintenance"] = _queue_derived_maintenance(conn, collection_id=collection_id, collection_name=collection_payload["name"], work_ids=touched_ids, reason="reparse_cached_pdfs")
+        summary["thinking"] = _sync_thinking_engine_extractions(conn, collection_name=collection_payload["name"], work_ids=touched_ids)
         if summary["maintenance"]["queued"]:
             _emit_progress(progress, f"queued maintenance instead of auto rebuild: {summary['maintenance']['dirty']}")
+        if summary["thinking"]:
+            _emit_progress(progress, f"updated thinking-engine substrate for {len(touched_ids)} works.")
         if skip_index or skip_graph:
             _emit_progress(progress, "legacy skip-index/skip-graph flags are now no-op because reparse no longer auto rebuilds derived lanes.")
 
