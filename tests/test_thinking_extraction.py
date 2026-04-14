@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from hep_rag_v2 import db, paths
 from hep_rag_v2.config import default_config, runtime_collection_config
@@ -96,11 +97,15 @@ class ThinkingExtractionTests(unittest.TestCase):
                         work_ids=[first, second],
                         reason="unit_test",
                     )
-                    summary = _sync_thinking_engine_extractions(
-                        conn,
-                        collection_name="default",
-                        work_ids=[first, second],
-                    )
+                    with mock.patch(
+                        "hep_rag_v2.pipeline.build_work_structures",
+                        return_value={"processed": 2, "ready": 2, "flagged": 0, "review_relaxed": 0, "items": []},
+                    ):
+                        summary = _sync_thinking_engine_extractions(
+                            conn,
+                            collection_name="default",
+                            work_ids=[first, second],
+                        )
                     result_rows = conn.execute(
                         """
                         SELECT work_id, status, summary_text, signature_json, evidence_json
@@ -140,6 +145,7 @@ class ThinkingExtractionTests(unittest.TestCase):
                     ).fetchall()
 
                 dirty = {str(row["lane"]): int(row["n"]) for row in dirty_rows}
+                self.assertEqual(summary["structure"]["processed"], 2)
                 self.assertEqual(summary["results"]["ready"], 2)
                 self.assertEqual(summary["methods"]["ready"], 2)
                 self.assertEqual(len(result_rows), 2)
@@ -182,10 +188,202 @@ class ThinkingExtractionTests(unittest.TestCase):
                 self.assertNotIn("results", dirty)
                 self.assertNotIn("methods", dirty)
                 self.assertNotIn("transfer", dirty)
+                self.assertNotIn("structure", dirty)
                 self.assertEqual(dirty["search"], 2)
                 self.assertEqual(dirty["vectors"], 2)
                 self.assertEqual(dirty["graph"], 2)
-                self.assertEqual(dirty["structure"], 2)
+        finally:
+            paths.set_workspace_root(original_root)
+
+    def test_sync_thinking_engine_extractions_runs_structure_before_downstream_lanes(self) -> None:
+        call_order: list[str] = []
+
+        def _record(name: str, payload: dict[str, int]) -> mock.Mock:
+            return mock.Mock(side_effect=lambda *args, **kwargs: call_order.append(name) or payload)
+
+        with db.connect() as conn, \
+            mock.patch("hep_rag_v2.pipeline.build_work_structures", _record("structure", {"processed": 1, "ready": 1})), \
+            mock.patch("hep_rag_v2.pipeline.build_result_objects", _record("results", {"ready": 1})), \
+            mock.patch("hep_rag_v2.pipeline.build_method_objects", _record("methods", {"ready": 1})), \
+            mock.patch("hep_rag_v2.pipeline.build_transfer_candidates", _record("transfer", {"ready": 1})), \
+            mock.patch("hep_rag_v2.pipeline.clear_dirty_work_ids") as clear_dirty:
+            summary = _sync_thinking_engine_extractions(conn, collection_name="default", work_ids=[101])
+
+        self.assertEqual(call_order, ["structure", "results", "methods", "transfer"])
+        self.assertEqual(summary["structure"]["ready"], 1)
+        clear_dirty.assert_any_call(conn, lane="structure", collection="default", work_ids=[101])
+
+
+
+    def test_sync_thinking_engine_extractions_uses_structure_capsules_as_upstream_truth(self) -> None:
+        original_root = paths.workspace_root()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                tmp = Path(td)
+                paths.set_workspace_root(tmp)
+                db.ensure_db()
+                config = default_config(workspace_root=tmp)
+                collection = runtime_collection_config(config, name="default")
+                with db.connect() as conn:
+                    collection_id = upsert_collection(conn, collection)
+                    first = self._insert_hit(
+                        conn,
+                        collection_id=collection_id,
+                        control_number=451,
+                        title="Capsule seeded work A",
+                        abstract="Narrative abstract without extraction keywords.",
+                    )
+                    second = self._insert_hit(
+                        conn,
+                        collection_id=collection_id,
+                        control_number=452,
+                        title="Capsule seeded work B",
+                        abstract="Another narrative abstract without extraction keywords.",
+                    )
+                    _queue_derived_maintenance(
+                        conn,
+                        collection_id=collection_id,
+                        collection_name="default",
+                        work_ids=[first, second],
+                        reason="unit_test",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO work_capsules (
+                          work_id, collection_id, profile, builder, is_review, status, capsule_text,
+                          result_signature_json, method_signature_json, anomaly_code, anomaly_detail
+                        ) VALUES (?, ?, 'default', 'test', 0, 'ready', ?, ?, ?, NULL, NULL)
+                        ON CONFLICT(work_id) DO UPDATE SET
+                          status = excluded.status,
+                          capsule_text = excluded.capsule_text,
+                          result_signature_json = excluded.result_signature_json,
+                          method_signature_json = excluded.method_signature_json,
+                          updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (
+                            first,
+                            collection_id,
+                            'capsule A',
+                            json.dumps([{"kind": "measurement", "label": "measurement", "evidence": "capsule result A"}]),
+                            json.dumps([{"kind": "statistical_fit", "label": "profile likelihood", "evidence": "capsule method shared"}]),
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO work_capsules (
+                          work_id, collection_id, profile, builder, is_review, status, capsule_text,
+                          result_signature_json, method_signature_json, anomaly_code, anomaly_detail
+                        ) VALUES (?, ?, 'default', 'test', 0, 'ready', ?, ?, ?, NULL, NULL)
+                        ON CONFLICT(work_id) DO UPDATE SET
+                          status = excluded.status,
+                          capsule_text = excluded.capsule_text,
+                          result_signature_json = excluded.result_signature_json,
+                          method_signature_json = excluded.method_signature_json,
+                          updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (
+                            second,
+                            collection_id,
+                            'capsule B',
+                            json.dumps([{"kind": "upper_limit", "label": "upper limit", "evidence": "capsule result B"}]),
+                            json.dumps([{"kind": "statistical_fit", "label": "profile likelihood", "evidence": "capsule method shared"}]),
+                        ),
+                    )
+
+                    with mock.patch(
+                        "hep_rag_v2.pipeline.build_work_structures",
+                        return_value={"processed": 2, "ready": 2, "flagged": 0, "review_relaxed": 0, "items": []},
+                    ):
+                        summary = _sync_thinking_engine_extractions(
+                            conn,
+                            collection_name="default",
+                            work_ids=[first, second],
+                        )
+                    result_rows = conn.execute(
+                        "SELECT work_id, status, summary_text, signature_json FROM result_objects ORDER BY work_id"
+                    ).fetchall()
+                    method_rows = conn.execute(
+                        "SELECT work_id, status, summary_text, signature_json FROM method_objects ORDER BY work_id"
+                    ).fetchall()
+                    transfer_rows = conn.execute(
+                        "SELECT mo.work_id AS source_work_id, tc.target_work_id, tc.status FROM transfer_candidates tc JOIN method_objects mo ON mo.method_object_id = tc.source_method_object_id ORDER BY source_work_id, tc.target_work_id"
+                    ).fetchall()
+
+                self.assertEqual(summary["results"]["ready"], 2)
+                self.assertEqual(summary["methods"]["ready"], 2)
+                self.assertTrue(all(row["status"] == "ready" for row in result_rows))
+                self.assertTrue(all("source=structure_capsule" in str(row["summary_text"]) for row in result_rows))
+                self.assertEqual([json.loads(str(row["signature_json"]))[0]["label"] for row in result_rows], ["measurement", "upper limit"])
+                self.assertTrue(all(row["status"] == "ready" for row in method_rows))
+                self.assertTrue(all("source=structure_capsule" in str(row["summary_text"]) for row in method_rows))
+                self.assertTrue(all(json.loads(str(row["signature_json"]))[0]["label"] == "profile likelihood" for row in method_rows))
+                self.assertGreaterEqual(len(transfer_rows), 2)
+                self.assertTrue(all(row["status"] == "ready" for row in transfer_rows))
+        finally:
+            paths.set_workspace_root(original_root)
+
+    def test_sync_thinking_engine_extractions_propagates_structure_needs_review_status(self) -> None:
+        original_root = paths.workspace_root()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                tmp = Path(td)
+                paths.set_workspace_root(tmp)
+                db.ensure_db()
+                config = default_config(workspace_root=tmp)
+                collection = runtime_collection_config(config, name="default")
+                with db.connect() as conn:
+                    collection_id = upsert_collection(conn, collection)
+                    work_id = self._insert_hit(
+                        conn,
+                        collection_id=collection_id,
+                        control_number=453,
+                        title="No extraction signatures",
+                        abstract="Narrative abstract without measurement or method markers.",
+                    )
+                    _queue_derived_maintenance(
+                        conn,
+                        collection_id=collection_id,
+                        collection_name="default",
+                        work_ids=[work_id],
+                        reason="unit_test",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO work_capsules (
+                          work_id, collection_id, profile, builder, is_review, status, capsule_text,
+                          result_signature_json, method_signature_json, anomaly_code, anomaly_detail
+                        ) VALUES (?, ?, 'default', 'test', 0, 'needs_attention', ?, '[]', '[]', 'missing_required_signatures', 'missing: result, method')
+                        ON CONFLICT(work_id) DO UPDATE SET
+                          status = excluded.status,
+                          capsule_text = excluded.capsule_text,
+                          result_signature_json = excluded.result_signature_json,
+                          method_signature_json = excluded.method_signature_json,
+                          anomaly_code = excluded.anomaly_code,
+                          anomaly_detail = excluded.anomaly_detail,
+                          updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (work_id, collection_id, 'capsule review required'),
+                    )
+
+                    summary = _sync_thinking_engine_extractions(
+                        conn,
+                        collection_name="default",
+                        work_ids=[work_id],
+                    )
+                    result_row = conn.execute(
+                        "SELECT status FROM result_objects WHERE work_id = ?",
+                        (work_id,),
+                    ).fetchone()
+                    method_row = conn.execute(
+                        "SELECT status FROM method_objects WHERE work_id = ?",
+                        (work_id,),
+                    ).fetchone()
+
+                self.assertEqual(summary["results"]["needs_review"], 1)
+                self.assertEqual(summary["methods"]["needs_review"], 1)
+                self.assertEqual(summary["transfer"]["needs_review"], 1)
+                self.assertEqual(result_row["status"], "needs_review")
+                self.assertEqual(method_row["status"], "needs_review")
         finally:
             paths.set_workspace_root(original_root)
 

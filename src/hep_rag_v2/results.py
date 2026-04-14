@@ -71,16 +71,21 @@ def build_result_objects(
 ) -> dict[str, Any]:
     ensure_result_schema(conn)
     selected_work_ids = _select_work_ids(conn, work_ids=work_ids, collection=collection)
-    summary: dict[str, Any] = {"processed": 0, "ready": 0, "partial": 0, "failed": 0, "items": []}
+    summary: dict[str, Any] = {"processed": 0, "ready": 0, "partial": 0, "needs_review": 0, "failed": 0, "items": []}
     for work_id in selected_work_ids:
         try:
             work = _load_work_row(conn, work_id)
             if work is None:
                 continue
             text_blob = _work_text_blob(conn, work_id=work_id, title=str(work["title"] or ""), abstract=str(work["abstract"] or ""))
-            values = _extract_values(text_blob)
-            has_structured_text = _has_structured_text(conn, work_id=work_id)
-            if values:
+            structure_snapshot = _load_structure_result_snapshot(conn, work_id=work_id)
+            use_structure_snapshot = bool(structure_snapshot and structure_snapshot["use_structure_payload"])
+            values = structure_snapshot["values"] if use_structure_snapshot else _extract_values(text_blob)
+            content_source = _resolve_content_source(conn, work_id=work_id, use_structure_snapshot=use_structure_snapshot)
+            if structure_snapshot is not None and structure_snapshot["status"] in {"needs_review", "failed"}:
+                status = str(structure_snapshot["status"])
+                summary[status] += 1
+            elif values:
                 status = "ready"
                 summary["ready"] += 1
             elif text_blob.strip():
@@ -94,18 +99,18 @@ def build_result_objects(
                 work_id=work_id,
                 collection_id=work["collection_id"],
                 status=status,
-                summary_text=_build_summary(title=str(work["title"] or ""), values=values, has_structured_text=has_structured_text),
+                summary_text=_build_summary(title=str(work["title"] or ""), values=values, content_source=content_source),
                 values=values,
                 label=str(work["title"] or "").strip() or f"work-{work_id}-result",
                 source_kind="extraction",
-                content_source="chunks" if has_structured_text else "metadata_only",
+                content_source=content_source,
             )
             _replace_result_values(conn, result_object_id=result_object_id, values=values)
             _replace_result_context(
                 conn,
                 result_object_id=result_object_id,
                 contexts=[
-                    {"context_kind": "source", "content": "chunks" if has_structured_text else "metadata_only"},
+                    {"context_kind": "source", "content": content_source},
                     {"context_kind": "title", "content": str(work["title"] or "")},
                 ],
             )
@@ -185,6 +190,50 @@ def _has_structured_text(conn: sqlite3.Connection, *, work_id: int) -> bool:
     return row is not None
 
 
+def _load_structure_result_snapshot(conn: sqlite3.Connection, *, work_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT status, builder, result_signature_json FROM work_capsules WHERE work_id = ?",
+        (work_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(str(row["result_signature_json"] or "[]"))
+    except Exception:
+        payload = []
+    values = [
+        {
+            "value_kind": str(item.get("kind") or "measurement"),
+            "label": str(item.get("label") or item.get("kind") or "measurement"),
+            "evidence_text": str(item.get("evidence") or item.get("summary_text") or item.get("label") or ""),
+            "confidence": float(item.get("confidence") or 0.65),
+        }
+        for item in payload
+        if isinstance(item, dict)
+    ]
+    builder = str(row["builder"] or "").strip()
+    return {
+        "status": _normalize_structure_status(row["status"]),
+        "values": values,
+        "use_structure_payload": bool(values) and builder and builder != "heuristic-v1",
+    }
+
+
+def _normalize_structure_status(value: Any) -> str:
+    status = str(value or "").strip()
+    if status == "review_relaxed":
+        return "ready"
+    if status == "needs_attention":
+        return "needs_review"
+    return status or "failed"
+
+
+def _resolve_content_source(conn: sqlite3.Connection, *, work_id: int, use_structure_snapshot: bool) -> str:
+    if use_structure_snapshot:
+        return "structure_capsule"
+    return "chunks" if _has_structured_text(conn, work_id=work_id) else "metadata_only"
+
+
 def _extract_values(text: str) -> list[dict[str, Any]]:
     values: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -206,11 +255,11 @@ def _extract_values(text: str) -> list[dict[str, Any]]:
     return values
 
 
-def _build_summary(*, title: str, values: list[dict[str, Any]], has_structured_text: bool) -> str:
+def _build_summary(*, title: str, values: list[dict[str, Any]], content_source: str) -> str:
     parts = [title.strip()]
     if values:
         parts.append("result signatures: " + ", ".join(item["label"] for item in values))
-    parts.append(f"source={'chunks' if has_structured_text else 'metadata_only'}")
+    parts.append(f"source={content_source}")
     return " | ".join(part for part in parts if part)
 
 

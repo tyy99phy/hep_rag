@@ -55,15 +55,20 @@ def build_transfer_candidates(
     ensure_result_schema(conn)
     ensure_transfer_schema(conn)
     selected_work_ids = _select_work_ids(conn, work_ids=work_ids, collection=collection)
-    summary: dict[str, Any] = {"processed": 0, "ready": 0, "partial": 0, "failed": 0, "items": []}
+    summary: dict[str, Any] = {"processed": 0, "ready": 0, "partial": 0, "needs_review": 0, "failed": 0, "items": []}
     for work_id in selected_work_ids:
         try:
+            structure_status = _load_structure_status(conn, work_id=work_id)
             candidates = _candidate_rows(conn, work_id=work_id, collection=collection)
             source_method_object_id = _lookup_method_object_id(conn, work_id=work_id)
             source_result_object_id = _lookup_result_object_id(conn, work_id=work_id)
             if source_method_object_id is not None:
                 _delete_transfer_candidates_for_source(conn, source_method_object_id=source_method_object_id)
-            if candidates:
+            if structure_status in {"needs_review", "failed"}:
+                status = str(structure_status)
+                summary[status] += 1
+                candidates = []
+            elif candidates:
                 status = "ready"
                 summary["ready"] += 1
             else:
@@ -121,6 +126,18 @@ def _select_work_ids(conn: sqlite3.Connection, *, work_ids: list[int] | None, co
         return [int(row["work_id"]) for row in rows]
     rows = conn.execute("SELECT work_id FROM works ORDER BY work_id").fetchall()
     return [int(row["work_id"]) for row in rows]
+
+
+def _load_structure_status(conn: sqlite3.Connection, *, work_id: int) -> str | None:
+    row = conn.execute("SELECT status FROM work_capsules WHERE work_id = ?", (work_id,)).fetchone()
+    if row is None:
+        return None
+    status = str(row["status"] or "").strip()
+    if status == "review_relaxed":
+        return "ready"
+    if status == "needs_attention":
+        return "needs_review"
+    return status or "failed"
 
 
 def _candidate_rows(conn: sqlite3.Connection, *, work_id: int, collection: str | None) -> list[dict[str, Any]]:
