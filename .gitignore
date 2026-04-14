@@ -20,3 +20,4 @@ db/*.sqlite
 data/
 indexes/
 exports/
+.omx/
