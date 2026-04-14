@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from hep_rag_v2.retrieval_adapter import (
+    HEP_OBJECT_CONTRACT_VERSION,
     TypedRetrievalItem,
     TypedRetrievalResult,
     adapt_chunk_hit,
@@ -139,8 +140,17 @@ class EvidenceRegistry:
     def to_payload(self) -> list[dict[str, Any]]:
         return [item.to_payload() for item in self._items]
 
-    def export(self) -> dict[str, list[dict[str, Any]]]:
-        return {"items": self.to_payload()}
+    def export(self) -> dict[str, Any]:
+        return {
+            "contract_version": HEP_OBJECT_CONTRACT_VERSION,
+            "object_type": "evidence_bundle",
+            "object_id": "evidence_bundle:registry",
+            "source_kind": "retrieval",
+            "status": "materialized",
+            "source_refs": [item.citation_id for item in self._items],
+            "derivation": {"item_count": len(self._items)},
+            "items": self.to_payload(),
+        }
 
 
 def build_evidence_registry(payload: Mapping[str, Any] | TypedRetrievalResult) -> dict[str, Any]:

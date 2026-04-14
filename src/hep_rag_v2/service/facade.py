@@ -9,7 +9,7 @@ from hep_rag_v2.pipeline import fetch_online_candidates as pipeline_fetch_online
 from hep_rag_v2.pipeline import ingest_online as pipeline_ingest_online
 from hep_rag_v2.pipeline import reparse_cached_pdfs as pipeline_reparse_cached_pdfs
 from hep_rag_v2.pipeline import retrieve as pipeline_retrieve
-from hep_rag_v2.retrieval_adapter import build_retrieval_shell
+from hep_rag_v2.retrieval_adapter import HEP_OBJECT_CONTRACT_VERSION, build_retrieval_shell
 from hep_rag_v2.service.inspect import audit_document_payload, show_document_payload, show_graph_payload
 from hep_rag_v2.service.workspace import workspace_status_payload
 
@@ -102,6 +102,17 @@ class HepRagServiceFacade:
         )
         trace_steps: list[dict[str, Any]] = [
             {
+                "contract_version": HEP_OBJECT_CONTRACT_VERSION,
+                "object_type": "trace_step",
+                "object_id": "trace_step:retrieve",
+                "source_kind": "service_facade",
+                "status": "materialized",
+                "source_refs": list((retrieval.get("evidence_registry") or {}).get("source_refs") or []),
+                "derivation": {
+                    "query": query,
+                    "phase": "retrieve",
+                    "target": (retrieval.get("typed_retrieval") or {}).get("metadata", {}).get("target"),
+                },
                 "step_type": "retrieve",
                 "summary": f"retrieved {len(retrieval.get('results') or [])} evidence items",
                 "target": (retrieval.get("typed_retrieval") or {}).get("metadata", {}).get("target"),
@@ -114,6 +125,13 @@ class HepRagServiceFacade:
         ideas = _rank_idea_candidates(retrieval, limit=idea_limit)
         trace_steps.append(
             {
+                "contract_version": HEP_OBJECT_CONTRACT_VERSION,
+                "object_type": "trace_step",
+                "object_id": "trace_step:generate_idea",
+                "source_kind": "service_facade",
+                "status": "materialized",
+                "source_refs": [item["object_id"] for item in ideas],
+                "derivation": {"query": query, "phase": "generate_idea", "idea_count": len(ideas)},
                 "step_type": "generate_idea",
                 "summary": f"ranked {len(ideas)} idea candidates",
                 "idea_ids": [item["object_id"] for item in ideas],
@@ -134,6 +152,12 @@ class HepRagServiceFacade:
                 "typed_retrieval": retrieval.get("typed_retrieval"),
             },
             "evidence_registry": registry.export(),
+            "object_contracts": {
+                "contract_version": HEP_OBJECT_CONTRACT_VERSION,
+                "evidence_bundle": registry.export(),
+                "trace_steps": trace_steps,
+                "retrieval": retrieval.get("object_contracts"),
+            },
         }
         return payload
 
@@ -169,6 +193,7 @@ class HepRagServiceFacade:
         enriched = dict(payload)
         enriched["typed_retrieval"] = shell["typed_retrieval"]
         enriched["evidence_registry"] = shell["evidence_registry"]
+        enriched["object_contracts"] = shell["object_contracts"]
         enriched["results"] = shell["results"]
         return enriched
 

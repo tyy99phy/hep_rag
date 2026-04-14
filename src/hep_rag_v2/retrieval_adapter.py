@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+HEP_OBJECT_CONTRACT_VERSION = "v1"
+
 
 @dataclass(frozen=True)
 class TypedRetrievalMetadata:
@@ -234,11 +236,34 @@ def build_retrieval_shell(payload: Mapping[str, Any], *, prefer_chunks: bool = T
     typed = normalize_retrieval_payload(payload)
     registry = EvidenceRegistry()
     results: list[dict[str, Any]] = []
+    work_capsules: list[dict[str, Any]] = []
     ordered_items = typed.typed_objects + (
         typed.chunks + typed.works if prefer_chunks else typed.works + typed.chunks
     )
     for item in ordered_items:
         entry = registry.register(item)
+        work_capsules.append(
+            {
+                "contract_version": HEP_OBJECT_CONTRACT_VERSION,
+                "object_type": "work_capsule",
+                "object_id": item.object_id,
+                "source_kind": str(item.source_type or item.object_type or "retrieval"),
+                "status": "materialized",
+                "source_refs": [entry.citation_id],
+                "derivation": {
+                    "query": typed.metadata.query,
+                    "target": typed.metadata.target,
+                    "collection": typed.metadata.collection,
+                },
+                "capsule_type": item.object_type,
+                "work_id": item.work_id,
+                "chunk_id": item.chunk_id,
+                "title": item.title,
+                "content": item.content,
+                "evidence_ref": entry.citation_id,
+                "evidence_key": entry.evidence_key,
+            }
+        )
         results.append(
             {
                 "source_type": str(item.source_type),
@@ -257,6 +282,11 @@ def build_retrieval_shell(payload: Mapping[str, Any], *, prefer_chunks: bool = T
         "results": results,
         "typed_retrieval": typed.to_payload(prefer_chunks=prefer_chunks),
         "evidence_registry": registry.export(),
+        "object_contracts": {
+            "contract_version": HEP_OBJECT_CONTRACT_VERSION,
+            "work_capsules": work_capsules,
+            "evidence_bundle": registry.export(),
+        },
     }
 
 

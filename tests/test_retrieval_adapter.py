@@ -1,4 +1,5 @@
 from __future__ import annotations
+# ruff: noqa: E402
 
 import importlib
 import sys
@@ -18,7 +19,7 @@ from hep_rag_v2.retrieval_adapter import (
     build_retrieval_shell,
     adapt_work_hit,
     normalize_retrieval_payload,
-)
+)  # noqa: E402
 
 
 class TestRetrievalAdapter(unittest.TestCase):
@@ -64,6 +65,45 @@ class TestRetrievalAdapter(unittest.TestCase):
         self.assertEqual(result.metadata.hybrid_score, 0.91)
         self.assertEqual(result.metadata.family_label, "CMS rare decay family")
         self.assertEqual(result.metadata.related_versions[0]["canonical_id"], "101v2")
+
+    def test_build_retrieval_shell_exposes_contract_bundle(self) -> None:
+        payload = {
+            "query": "CMS VBS SSWW",
+            "collection": "default",
+            "requested_target": "works",
+            "routing": {"target": "works", "graph_expand": 0, "reasons": ["manual_target"]},
+            "works": [
+                {
+                    "work_id": 101,
+                    "raw_title": "Observation of electroweak production of same-sign W boson pairs",
+                    "abstract": "CMS observes same-sign WW production via vector boson scattering.",
+                    "canonical_source": "inspire",
+                    "canonical_id": "1624170",
+                    "rank": 1,
+                    "hybrid_score": 0.91,
+                }
+            ],
+            "evidence_chunks": [
+                {
+                    "chunk_id": 301,
+                    "work_id": 101,
+                    "raw_title": "Observation of electroweak production of same-sign W boson pairs",
+                    "clean_text": "Observed significance exceeds the background expectation.",
+                    "canonical_source": "inspire",
+                    "canonical_id": "1624170",
+                    "rank": 1,
+                    "hybrid_score": 0.83,
+                }
+            ],
+        }
+
+        shell = build_retrieval_shell(payload)
+
+        self.assertEqual(shell["evidence_registry"]["object_type"], "evidence_bundle")
+        self.assertEqual(shell["evidence_registry"]["contract_version"], "v1")
+        self.assertEqual(shell["object_contracts"]["work_capsules"][0]["object_type"], "work_capsule")
+        self.assertEqual(shell["object_contracts"]["work_capsules"][0]["status"], "materialized")
+        self.assertEqual(shell["object_contracts"]["work_capsules"][0]["evidence_ref"], "E1")
 
     def test_adapt_chunk_hit_preserves_chunk_context(self) -> None:
         row = {
@@ -145,6 +185,7 @@ class TestRetrievalAdapter(unittest.TestCase):
         shell = build_retrieval_shell(payload)
         self.assertEqual([item["object_type"] for item in shell["results"]], ["result_object", "method_object"])
         self.assertEqual(shell["evidence_registry"]["items"][0]["evidence_key"], "result_object:41")
+        self.assertEqual(shell["object_contracts"]["evidence_bundle"]["object_type"], "evidence_bundle")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ class BenchmarkCase:
     category: str
     prompt: str
     target_lane: str
+    contract_focus: tuple[str, ...]
     database_value: str
     expected_failure_without_db: str
     must_mention: tuple[str, ...]
@@ -26,6 +27,7 @@ class BenchmarkScenario:
     database_enabled: bool
     retrieval_mode: str
     answer_mode: str
+    contract_targets: tuple[str, ...] = ()
 
 
 def default_case_fixture_path(*, repo_root: str | Path | None = None) -> Path:
@@ -49,6 +51,7 @@ def default_benchmark_scenarios() -> list[BenchmarkScenario]:
             database_enabled=False,
             retrieval_mode="none",
             answer_mode="free_generation",
+            contract_targets=(),
         ),
         BenchmarkScenario(
             name="llm_plus_retrieve",
@@ -56,6 +59,7 @@ def default_benchmark_scenarios() -> list[BenchmarkScenario]:
             database_enabled=True,
             retrieval_mode="works_chunks_hybrid",
             answer_mode="evidence_augmented_generation",
+            contract_targets=("evidence_bundle",),
         ),
         BenchmarkScenario(
             name="llm_plus_retrieve_and_structure",
@@ -63,6 +67,7 @@ def default_benchmark_scenarios() -> list[BenchmarkScenario]:
             database_enabled=True,
             retrieval_mode="typed_retrieval_shell",
             answer_mode="structured_grounded_generation",
+            contract_targets=("work_capsule", "evidence_bundle"),
         ),
         BenchmarkScenario(
             name="thinking_engine_trace",
@@ -70,6 +75,7 @@ def default_benchmark_scenarios() -> list[BenchmarkScenario]:
             database_enabled=True,
             retrieval_mode="typed_retrieval_with_trace",
             answer_mode="trace_backed_idea_generation",
+            contract_targets=("work_capsule", "evidence_bundle", "trace_step"),
         ),
     ]
 
@@ -84,12 +90,35 @@ def build_benchmark_manifest(
     loaded_scenarios = scenarios or default_benchmark_scenarios()
     categories = sorted({item.category for item in loaded_cases})
     target_lanes = sorted({item.target_lane for item in loaded_cases})
+    contract_objects = sorted(
+        {
+            contract
+            for item in loaded_cases
+            for contract in item.contract_focus
+        }
+        | {
+            contract
+            for scenario in loaded_scenarios
+            for contract in scenario.contract_targets
+        }
+    )
     return {
         "model_label": model_label,
         "case_count": len(loaded_cases),
         "scenario_count": len(loaded_scenarios),
         "categories": categories,
         "target_lanes": target_lanes,
+        "contract_objects": contract_objects,
+        "contract_wire_format": {
+            "contract_version": "v1",
+            "required_fields": [
+                "object_id",
+                "source_kind",
+                "status",
+                "source_refs",
+                "derivation",
+            ],
+        },
         "cases": [asdict(item) for item in loaded_cases],
         "scenarios": [asdict(item) for item in loaded_scenarios],
     }
@@ -117,6 +146,7 @@ def _coerce_case(item: Any) -> BenchmarkCase:
         category=str(item["category"]),
         prompt=str(item["prompt"]),
         target_lane=str(item["target_lane"]),
+        contract_focus=tuple(str(token) for token in item.get("contract_focus") or []),
         database_value=str(item["database_value"]),
         expected_failure_without_db=str(item["expected_failure_without_db"]),
         must_mention=tuple(str(token) for token in item.get("must_mention") or []),

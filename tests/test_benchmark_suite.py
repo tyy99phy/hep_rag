@@ -57,6 +57,13 @@ class BenchmarkSuiteTests(unittest.TestCase):
         self.assertIn("works_chunks", manifest["target_lanes"])
         self.assertIn("methods_future", manifest["target_lanes"])
         self.assertIn("thinking_engine", manifest["categories"])
+        self.assertIn("work_capsule", manifest["contract_objects"])
+        self.assertIn("evidence_bundle", manifest["contract_objects"])
+        self.assertEqual(manifest["contract_wire_format"]["contract_version"], "v1")
+        self.assertEqual(
+            manifest["contract_wire_format"]["required_fields"],
+            ["object_id", "source_kind", "status", "source_refs", "derivation"],
+        )
 
 
 if __name__ == "__main__":

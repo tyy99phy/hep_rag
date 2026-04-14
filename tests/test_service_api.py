@@ -16,12 +16,12 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from hep_rag_v2 import db, paths
-from hep_rag_v2.api import create_app
-from hep_rag_v2.config import default_config
-from hep_rag_v2.fulltext import import_mineru_source, materialize_mineru_document
-from hep_rag_v2.metadata import upsert_collection, upsert_work_from_hit
-from hep_rag_v2.service import audit_document_payload, show_document_payload, show_graph_payload, workspace_status_payload
+from hep_rag_v2 import db, paths  # noqa: E402
+from hep_rag_v2.api import create_app  # noqa: E402
+from hep_rag_v2.config import default_config  # noqa: E402
+from hep_rag_v2.fulltext import import_mineru_source, materialize_mineru_document  # noqa: E402
+from hep_rag_v2.metadata import upsert_collection, upsert_work_from_hit  # noqa: E402
+from hep_rag_v2.service import audit_document_payload, show_document_payload, show_graph_payload, workspace_status_payload  # noqa: E402
 
 
 class ServiceLayerTests(unittest.TestCase):
@@ -83,7 +83,24 @@ class ApiLayerTests(unittest.TestCase):
                 tmp = Path(td)
                 app = create_app(config_loader=_api_config_loader(tmp))
                 facade = mock.Mock()
-                facade.retrieve.return_value = {"query": "q", "works": [], "typed_retrieval": {"primary": []}}
+                facade.retrieve.return_value = {
+                    "query": "q",
+                    "works": [],
+                    "typed_retrieval": {"primary": []},
+                    "object_contracts": {
+                        "contract_version": "v1",
+                        "evidence_bundle": {
+                            "object_type": "evidence_bundle",
+                            "object_id": "evidence_bundle:registry",
+                            "source_kind": "retrieval",
+                            "status": "materialized",
+                            "source_refs": [],
+                            "derivation": {"item_count": 0},
+                            "items": [],
+                        },
+                        "work_capsules": [],
+                    },
+                }
                 with TestClient(app) as client, mock.patch(
                     "hep_rag_v2.api.app.create_facade",
                     return_value=facade,
@@ -91,6 +108,10 @@ class ApiLayerTests(unittest.TestCase):
                     response = client.post("/retrieve", json={"query": "q", "limit": 3, "target": "works"})
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json()["query"], "q")
+                    self.assertEqual(
+                        response.json()["object_contracts"]["evidence_bundle"]["object_type"],
+                        "evidence_bundle",
+                    )
                     create_facade_mock.assert_called_once_with(mock.ANY)
                     facade.retrieve.assert_called_once_with(
                         query="q",
@@ -261,11 +282,69 @@ class ApiLayerTests(unittest.TestCase):
                     ],
                     "trace": {
                         "steps": [
-                            {"step_type": "retrieve", "summary": "retrieved supporting evidence"},
-                            {"step_type": "generate_idea", "summary": "ranked idea candidates"},
+                            {
+                                "object_type": "trace_step",
+                                "object_id": "trace_step:retrieve",
+                                "source_kind": "service_facade",
+                                "status": "materialized",
+                                "source_refs": [],
+                                "derivation": {"phase": "retrieve"},
+                                "step_type": "retrieve",
+                                "summary": "retrieved supporting evidence",
+                            },
+                            {
+                                "object_type": "trace_step",
+                                "object_id": "trace_step:generate_idea",
+                                "source_kind": "service_facade",
+                                "status": "materialized",
+                                "source_refs": [],
+                                "derivation": {"phase": "generate_idea"},
+                                "step_type": "generate_idea",
+                                "summary": "ranked idea candidates",
+                            },
                         ]
                     },
-                    "evidence_registry": {"items": []},
+                    "evidence_registry": {
+                        "object_type": "evidence_bundle",
+                        "object_id": "evidence_bundle:registry",
+                        "source_kind": "retrieval",
+                        "status": "materialized",
+                        "source_refs": [],
+                        "derivation": {"item_count": 0},
+                        "items": [],
+                    },
+                    "object_contracts": {
+                        "contract_version": "v1",
+                        "trace_steps": [
+                            {
+                                "object_type": "trace_step",
+                                "object_id": "trace_step:retrieve",
+                                "source_kind": "service_facade",
+                                "status": "materialized",
+                                "source_refs": [],
+                                "derivation": {"phase": "retrieve"},
+                                "step_type": "retrieve",
+                            },
+                            {
+                                "object_type": "trace_step",
+                                "object_id": "trace_step:generate_idea",
+                                "source_kind": "service_facade",
+                                "status": "materialized",
+                                "source_refs": [],
+                                "derivation": {"phase": "generate_idea"},
+                                "step_type": "generate_idea",
+                            },
+                        ],
+                        "evidence_bundle": {
+                            "object_type": "evidence_bundle",
+                            "object_id": "evidence_bundle:registry",
+                            "source_kind": "retrieval",
+                            "status": "materialized",
+                            "source_refs": [],
+                            "derivation": {"item_count": 0},
+                            "items": [],
+                        },
+                    },
                 }
                 with TestClient(app) as client, mock.patch(
                     "hep_rag_v2.api.app.create_facade",
@@ -279,6 +358,11 @@ class ApiLayerTests(unittest.TestCase):
                     self.assertEqual(payload["status"], "succeeded")
                     self.assertEqual(payload["result"]["ideas"][0]["object_type"], "idea_candidate")
                     self.assertEqual(payload["result"]["trace"]["steps"][0]["step_type"], "retrieve")
+                    self.assertEqual(payload["result"]["trace"]["steps"][0]["object_type"], "trace_step")
+                    self.assertEqual(
+                        payload["result"]["object_contracts"]["evidence_bundle"]["object_type"],
+                        "evidence_bundle",
+                    )
 
                     events = client.get(f"/jobs/{job_id}/events").json()["events"]
                     self.assertTrue(any(item["type"] == "reasoning_step" for item in events), msg=events)
