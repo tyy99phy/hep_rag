@@ -1,8 +1,33 @@
 # 测试方法
 
-这份文档只保留用户真正会用到的测试路径，不放内部主计划或夜间执行说明。
+这份文档只保留用户真正会用到的测试路径，并补充当前 `structure-upstream` 波次必须满足的最小验证规则。
 
-如果你在推进当前 `PDG/work` 双层图谱实现波次，请同时查看 [`docs/pdg-work-implementation.md`](./pdg-work-implementation.md)；那份文档定义了这条开发线的显式约束、异常处理要求和验收清单。
+如果你在推进当前结构化推理 substrate，请同时查看：
+
+- [`docs/pdg-work-implementation.md`](./pdg-work-implementation.md)：当前波次的结构优先规则、状态语义和验收清单
+- [`docs/hep-core-object-contracts.md`](./hep-core-object-contracts.md)：冻结的对象合同与允许状态集合
+
+## 当前波次：structure 先于 downstream lanes
+
+当前仓库不再把 `results` / `methods` / `transfer` 视为彼此独立的自由抽取器，而是把 `structure` 当作上游判断来源。推进这一波次时，至少要保证：
+
+- ingest / reparse 默认路径先跑 `build_work_structures()`，再跑 `results` / `methods` / `transfer`
+- 顶层状态只使用合同允许值：`ready` / `partial` / `needs_review` / `failed`
+- 非综述文章缺少必需签名时，不允许静默跳过；必须留下合同级可见状态
+- README、测试文档和实现文档统一把仓库描述为 reasoning substrate，而不是仅仅“若干独立 producer 的集合”
+
+建议在当前波次至少补跑：
+
+```bash
+pytest -q tests/test_thinking_extraction.py tests/test_bootstrap.py tests/test_config_runtime.py
+pytest -q tests/test_object_contracts.py tests/test_pdg_structure.py
+```
+
+如果工作触及检索/服务/基准适配层，再补：
+
+```bash
+pytest -q tests/test_retrieval_adapter.py tests/test_service_api.py tests/test_benchmark_suite.py
+```
 
 ## 1. 最小导入测试
 
@@ -38,10 +63,11 @@ hep-rag ingest-online "same sign WW CMS" \
 - 在线检索是否正常
 - 元数据是否成功入库
 - work-level 检索是否可用
+- 默认 ingest 路径没有因为结构层接线而退化
 
 ## 1.5 PDG archival ingest 骨架冒烟
 
-如果你正在推进 PDG/work 结构化导入，而手头已经有本地 PDG PDF，可以先验证骨架入口：
+如果你正在推进 PDG / archival 骨架，而手头已经有本地 PDG PDF，可以先验证入口：
 
 ```bash
 hep-rag import-pdg \
@@ -57,9 +83,9 @@ hep-rag import-pdg \
 - 本地 PDF 是否能进入 workspace PDF 区
 - archival ingest stub / 后续 MinerU 接口路径是否稳定
 
-## 2. selective fulltext 测试
+## 2. selective fulltext / structure 测试
 
-如果 metadata-only 没问题，再测全文热层。
+如果 metadata-only 没问题，再测全文热层与结构层衔接。
 
 先在 `hep-rag.yaml` 中确认 `mineru.enabled=true`，然后执行：
 
@@ -76,7 +102,16 @@ hep-rag ingest-online "same sign WW CMS" \
 - PDF 下载
 - MinerU 解析
 - chunk 层索引
+- 结构层在 downstream producers 之前完成
 - 证据 drill-down
+
+如果要验证本地已有 PDF 的增量结构刷新：
+
+```bash
+hep-rag reparse-pdfs --config ./hep-rag.yaml --collection default
+```
+
+关注点不是“有没有跑完一个命令”，而是：结构层是否在 reparse 后重新成为结果/方法/迁移三条下游 lane 的共同上游。
 
 ## 3. 导入后检查
 
@@ -92,6 +127,7 @@ hep-rag status --config ./hep-rag.yaml
 - `documents`
 - `chunks`
 - 搜索/向量索引计数
+- 结构相关衍生物是否开始可见
 
 ### 只做检索
 
@@ -133,9 +169,9 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 ### 重点观察
 
 - `Fetch Papers`：召回是否合理
-- `Retrieve`：works/chunks 是否与 query 对齐
+- `Retrieve`：works/chunks/structure 证据是否与 query 对齐
 - `Ask`：答案是否带证据、有没有明显幻觉
-- `Start Ingest Job`：日志是否持续刷新、完成后统计是否变化
+- `Start Ingest Job`：日志是否持续刷新、结构层是否先于下游 lane 完成
 
 ## 5. 基准测试
 
@@ -175,11 +211,7 @@ python scripts/run_rag_effect_benchmark.py \
 3. `llm_plus_retrieve_and_structure`
 4. `thinking_engine_trace`
 
-也就是专门用来比较：
-
-> 同一个较弱模型，在“不接数据库”和“接数据库”时，表现差了多少。
-
-其中 `thinking_engine_trace` 会额外检查 phase-1 thinking-engine substrate：要求输出 idea 候选、method transfer 线索，以及可重放的 reasoning step 摘要，而不是只给自由发挥的长文本。
+其中 `thinking_engine_trace` 会额外检查 reasoning substrate 是否仍能输出可回放的思考摘要；`llm_plus_retrieve_and_structure` 则用来观察结构层接入后，对弱模型问答的实际增益。
 
 如果只是确认 manifest 内容，也可以直接跑 CLI：
 
@@ -198,20 +230,26 @@ hep-rag benchmark-manifest --model-label weak-model
 - Web 控制台交互正常
 - `python -m pytest -q` 全绿
 
+如果你在推进 structure-upstream 波次，再额外确认：
+
+- `tests/test_pdg_structure.py` 覆盖 article / review 的签名策略
+- `tests/test_thinking_extraction.py` 证明 structure 与 downstream lanes 仍保持一致
+- 顶层状态没有漂移出 `ready` / `partial` / `needs_review` / `failed`
+
 ## 7. 当前边界
 
 当前仓库适合测试：
 
 - metadata-first retrieval substrate
 - selective fulltext hot lane
+- structure-governed downstream extraction
 - typed retrieval / evidence shell
-- 基础用户端交互
 - benchmark 脚手架
 
 当前仓库还不适合直接测试：
 
 - 完整 PDG spine
-- 完整落地的 typed result objects 生产路径
-- 完整落地的 typed method transfer 生产路径
+- 全量基准金标数据
+- 已冻结但全面商品化的 reasoning/object production pipeline
 
-其中核心对象合同已在 `docs/hep-core-object-contracts.md` 中冻结为 substrate 规范，但代码层全面对齐仍属于后续架构演化方向。
+对象合同已经在 [`docs/hep-core-object-contracts.md`](./hep-core-object-contracts.md) 冻结；本波次的重点不是再发明新的状态语义，而是让 `structure -> results/methods/transfer` 的上游关系在实现、测试和文档里都真正成立。

@@ -1,13 +1,17 @@
 # hep\_rag\_v2
 
-配置驱动的高能物理文献图谱与检索框架。从 InspireHEP 在线检索论文元数据，下载 PDF 并解析全文，构建引用图谱和向量索引，支持 BM25 / 向量 / 混合检索与 LLM 问答。
+配置驱动的高能物理论文检索与结构化 reasoning substrate。从 InspireHEP 在线检索论文元数据，下载 PDF 并解析全文，构建引用图谱与检索索引，并在当前波次中把 `structure` 作为 `results` / `methods` / `transfer` 的上游判断来源。
 
 ## 测试方法
 
 如果你想快速试用、导入文章或做 benchmark，建议看：
 
 - [`docs/testing.md`](docs/testing.md)
-- [`docs/pdg-work-implementation.md`](docs/pdg-work-implementation.md)（当前 PDG/work 实施波次的落地约束、审查结论与验收清单）
+- [`docs/pdg-work-implementation.md`](docs/pdg-work-implementation.md)（当前 structure-upstream 波次的落地约束、状态语义与验收清单）
+
+## 当前仓库姿态
+
+当前仓库不只是“检索 + 问答”工具链，也在收敛为一个 HEP reasoning substrate：`structure` 先产出上游结构判断，再由 `results` / `methods` / `transfer` 消费同一套合同级状态与语义。当前允许的顶层状态以 [`docs/hep-core-object-contracts.md`](docs/hep-core-object-contracts.md) 为准：`ready` / `partial` / `needs_review` / `failed`。
 
 ## 架构
 
@@ -28,10 +32,15 @@ MinerU 全文解析 → sections → blocks → chunks
     │
     ├── BM25 全文索引 (works / chunks / formulas / assets)
     ├── 向量索引 (hash-idf-v1 / sentence-transformers)
-    └── 图结构边 (引文、书目耦合、共被引、向量相似度)
+    ├── 图结构边 (引文、书目耦合、共被引、向量相似度)
+    └── structure 上游判断层
             │
-            ▼
-    work / chunk 双层混合检索 + LLM 问答
+            ├── results 抽取
+            ├── methods 抽取
+            └── transfer 候选生成
+                    │
+                    ▼
+            work / chunk 双层混合检索 + LLM 问答
 ```
 
 ## 安装
@@ -70,14 +79,14 @@ hep-rag init-config --config ./hep-rag.yaml --workspace ./workspace
 hep-rag fetch-papers "rare decay eta to four muons CMS" \
   --config ./hep-rag.yaml --limit 5
 
-# 4. 一键入库（元数据 + PDF 下载 + MinerU 解析 + 索引 + 图谱）
+# 4. 一键入库（元数据 + PDF 下载 + MinerU 解析 + structure → downstream extractions + 索引 / 图谱）
 hep-rag ingest-online "rare decay eta to four muons CMS" \
   --config ./hep-rag.yaml --limit 10 --download-limit 10 --parse-limit 10
 
 # 4b. 把本地 PDG PDF 注册进 archival ingest 骨架
 hep-rag import-pdg --config ./hep-rag.yaml --collection pdg --edition 2024 --pdf /path/to/pdg-2024.pdf
 
-# 4c. 对本地已有 PDF 做增量 MinerU 重解析
+# 4c. 对本地已有 PDF 做增量 MinerU 重解析，并刷新 structure/downstream lanes
 hep-rag reparse-pdfs --config ./hep-rag.yaml --collection default
 
 # 5. 检索（不调用 LLM）
@@ -211,8 +220,8 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 | `init-config` | 生成默认配置文件和工作区目录 |
 | `init` | 初始化数据库 |
 | `fetch-papers` | 在线搜索 InspireHEP，预览候选论文 |
-| `ingest-online` | 搜索 + 下载 + 解析 + 建索引（全流程） |
-| `reparse-pdfs` | 仅对本地已有 PDF 且尚未成功 materialize 的 work 重新提交 MinerU |
+| `ingest-online` | 搜索 + 下载 + 解析 + 结构判断 + 下游抽取 + 建索引（全流程） |
+| `reparse-pdfs` | 仅对本地已有 PDF 重新提交 MinerU，并刷新 structure/results/methods/transfer |
 | `ingest-metadata` | 仅导入元数据（不下载 PDF） |
 | `import-mineru` | 手动导入 MinerU 解析结果 |
 | `import-pdg` | 注册/暂存 PDG PDF，进入 archival ingest 骨架 |
@@ -223,8 +232,8 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 | `search-bm25` | BM25 关键词检索 |
 | `search-vector` | 向量语义检索 |
 | `search-hybrid` | 混合检索（自动路由 work/chunk 级别） |
-| `query` | 检索证据（不调用 LLM） |
-| `ask` | 检索 + LLM 问答 |
+| `query` | 检索证据（可消费 structure/works/chunks，不调用 LLM） |
+| `ask` | 检索 + LLM 问答（消费结构化证据外壳） |
 | `benchmark-manifest` | 导出 RAG effect / thinking-engine benchmark manifest |
 | `show-document` | 查看论文解析结果 |
 | `audit-document` | 审查解析质量 |
