@@ -11,6 +11,7 @@ METHOD_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ("background_estimation", "background estimation", re.compile(r"\b(background estimation|data[- ]driven|control region)\b", re.IGNORECASE)),
     ("reconstruction", "reconstruction", re.compile(r"\b(reconstruction|unfolding|matrix element|tagger)\b", re.IGNORECASE)),
 )
+OBJECT_CONTRACT_VERSION = "v1"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS method_objects (
@@ -94,6 +95,8 @@ def build_method_objects(
                 summary_text=_build_summary(title=str(work["title"] or ""), signatures=signatures, has_structured_text=has_structured_text),
                 signatures=signatures,
                 name=str(work["title"] or "").strip() or f"work-{work_id}-method",
+                source_kind="extraction",
+                content_source="chunks" if has_structured_text else "metadata_only",
             )
             _replace_method_signatures(conn, method_object_id=method_object_id, signatures=signatures)
             _replace_method_applications(conn, method_object_id=method_object_id, work_id=work_id, signatures=signatures)
@@ -108,6 +111,8 @@ def build_method_objects(
                 summary_text=None,
                 signatures=[],
                 name=f"work-{work_id}-method",
+                source_kind="extraction",
+                content_source="metadata_only",
             )
             summary["processed"] += 1
             summary["failed"] += 1
@@ -200,6 +205,70 @@ def _build_summary(*, title: str, signatures: list[dict[str, Any]], has_structur
     return " | ".join(part for part in parts if part)
 
 
+def _build_evidence_bundle(
+    *,
+    work_id: int,
+    label: str,
+    evidence_text: str,
+    source_kind: str,
+    status: str,
+    confidence: float | None,
+    ref_suffix: str,
+    content_source: str,
+) -> dict[str, Any]:
+    return {
+        "contract_version": OBJECT_CONTRACT_VERSION,
+        "object_type": "evidence_bundle",
+        "object_id": f"evidence_bundle:{work_id}:{ref_suffix}",
+        "label": label,
+        "source_kind": source_kind,
+        "status": status,
+        "source_refs": [f"work:{work_id}", f"evidence:{ref_suffix}", f"content_source:{content_source}"],
+        "derivation": "extracted",
+        "content_source": content_source,
+        "confidence": confidence,
+        "items": [
+            {
+                "kind": "text_span",
+                "ref": f"work:{work_id}",
+                "text": evidence_text,
+            }
+        ],
+    }
+
+
+def _build_method_signature(
+    signature: dict[str, Any], *, work_id: int, source_kind: str, content_source: str, status: str, index: int
+) -> dict[str, Any]:
+    evidence_bundle = _build_evidence_bundle(
+        work_id=work_id,
+        label=str(signature["label"]),
+        evidence_text=str(signature["evidence_text"]),
+        source_kind=source_kind,
+        status=status,
+        confidence=float(signature.get("confidence") or 0.0),
+        ref_suffix=f"method:{index}",
+        content_source=content_source,
+    )
+    return {
+        "contract_version": OBJECT_CONTRACT_VERSION,
+        "object_type": "method_signature",
+        "object_id": f"method_signature:{work_id}:{index}",
+        "work_id": work_id,
+        "source_kind": source_kind,
+        "status": status,
+        "source_refs": [f"work:{work_id}", f"method_signature:{index}", f"content_source:{content_source}"],
+        "derivation": "normalized",
+        "content_source": content_source,
+        "method_kind": signature["method_kind"],
+        "label": signature["label"],
+        "confidence": signature["confidence"],
+        "summary_text": signature["evidence_text"],
+        "normalized_text": signature["label"].strip().lower(),
+        "evidence_bundle": evidence_bundle,
+    }
+
+
 def _upsert_method_object(
     conn: sqlite3.Connection,
     *,
@@ -209,9 +278,21 @@ def _upsert_method_object(
     summary_text: str | None,
     signatures: list[dict[str, Any]],
     name: str,
+    source_kind: str,
+    content_source: str,
 ) -> int:
     signature_json = json.dumps(
-        [{"method_kind": item["method_kind"], "label": item["label"]} for item in signatures],
+        [
+            _build_method_signature(
+                item,
+                work_id=work_id,
+                source_kind=source_kind,
+                content_source=content_source,
+                status=status,
+                index=index,
+            )
+            for index, item in enumerate(signatures, start=1)
+        ],
         ensure_ascii=False,
     )
     method_family = signatures[0]["method_kind"] if signatures else None

@@ -7,6 +7,8 @@ from typing import Any
 from hep_rag_v2.methods import ensure_method_schema
 from hep_rag_v2.results import ensure_result_schema
 
+OBJECT_CONTRACT_VERSION = "v1"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS transfer_candidates (
   transfer_candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,6 +140,7 @@ def _candidate_rows(conn: sqlite3.Connection, *, work_id: int, collection: str |
         f"""
         SELECT
           other.work_id AS target_work_id,
+          w.title AS target_title,
           ms.signature_text AS label,
           COUNT(*) AS support_count,
           MAX(CASE WHEN rv.result_value_id IS NOT NULL THEN 1 ELSE 0 END) AS has_result_support
@@ -147,12 +150,13 @@ def _candidate_rows(conn: sqlite3.Connection, *, work_id: int, collection: str |
           ON COALESCE(other_ms.normalized_text, lower(other_ms.signature_text))
            = COALESCE(ms.normalized_text, lower(ms.signature_text))
         JOIN method_objects other ON other.method_object_id = other_ms.method_object_id
+        JOIN works w ON w.work_id = other.work_id
         LEFT JOIN result_objects ro ON ro.work_id = other.work_id
         LEFT JOIN result_values rv ON rv.result_object_id = ro.result_object_id
         {collection_sql}
         WHERE {' AND '.join(where)}
           AND other.work_id != mo.work_id
-        GROUP BY other.work_id, ms.signature_text
+        GROUP BY other.work_id, w.title, ms.signature_text
         ORDER BY has_result_support DESC, support_count DESC, other.work_id
         """,
         params,
@@ -164,6 +168,7 @@ def _candidate_rows(conn: sqlite3.Connection, *, work_id: int, collection: str |
         out.append(
             {
                 "target_work_id": int(row["target_work_id"]),
+                "target_title": str(row["target_title"] or "").strip() or f"work-{int(row['target_work_id'])}",
                 "label": str(row["label"]),
                 "support_count": support,
                 "score": min(0.99, 0.35 + 0.2 * support + (0.15 if has_result_support else 0.0)),
@@ -193,6 +198,87 @@ def _delete_transfer_candidates_for_source(conn: sqlite3.Connection, *, source_m
     conn.execute("DELETE FROM transfer_candidates WHERE source_method_object_id = ?", (source_method_object_id,))
 
 
+def _build_evidence_bundle(*, target_work_id: int, label: str, support_count: int, score: float, ref_suffix: str) -> dict[str, Any]:
+    return {
+        "contract_version": OBJECT_CONTRACT_VERSION,
+        "object_type": "evidence_bundle",
+        "object_id": f"evidence_bundle:{target_work_id}:{ref_suffix}",
+        "source_kind": "extraction",
+        "status": "ready",
+        "source_refs": [f"work:{target_work_id}", f"transfer:{ref_suffix}"],
+        "derivation": "aggregated",
+        "label": label,
+        "confidence": score,
+        "items": [
+            {
+                "kind": "shared_method",
+                "ref": f"work:{target_work_id}",
+                "text": label,
+                "support_count": support_count,
+            }
+        ],
+    }
+
+
+def _build_trace_step(*, label: str, support_count: int, score: float, source_method_object_id: int | None, target_work_id: int) -> dict[str, Any]:
+    return {
+        "contract_version": OBJECT_CONTRACT_VERSION,
+        "object_type": "trace_step",
+        "object_id": f"trace_step:{source_method_object_id or 'unknown'}:{target_work_id}:{label.strip().lower().replace(' ', '_')}",
+        "source_kind": "extraction",
+        "status": "ready",
+        "source_refs": [
+            f"method_object:{source_method_object_id}" if source_method_object_id is not None else "method_object:unknown",
+            f"work:{target_work_id}",
+        ],
+        "derivation": "inferred",
+        "step_kind": "shared_method_transfer",
+        "target_work_id": target_work_id,
+        "summary_text": f"shared method signature '{label}'",
+        "confidence": score,
+        "evidence_refs": [f"evidence_bundle:{target_work_id}:transfer"],
+        "evidence_bundle": _build_evidence_bundle(
+            target_work_id=target_work_id,
+            label=label,
+            support_count=support_count,
+            score=score,
+            ref_suffix="transfer",
+        ),
+    }
+
+
+def _build_work_capsule(
+    *,
+    label: str,
+    support_count: int,
+    score: float,
+    source_method_object_id: int | None,
+    target_work_id: int,
+    target_title: str,
+) -> dict[str, Any]:
+    return {
+        "contract_version": OBJECT_CONTRACT_VERSION,
+        "object_type": "work_capsule",
+        "object_id": f"work_capsule:{target_work_id}",
+        "work_id": target_work_id,
+        "title": target_title,
+        "source_kind": "extraction",
+        "status": "ready",
+        "source_refs": [f"work:{target_work_id}", f"method_object:{source_method_object_id or 'unknown'}"],
+        "derivation": "aggregated",
+        "shared_method_label": label,
+        "support_count": support_count,
+        "score": score,
+        "trace_step": _build_trace_step(
+            label=label,
+            support_count=support_count,
+            score=score,
+            source_method_object_id=source_method_object_id,
+            target_work_id=target_work_id,
+        ),
+    }
+
+
 def _upsert_transfer_candidate(
     conn: sqlite3.Connection,
     *,
@@ -213,7 +299,17 @@ def _upsert_transfer_candidate(
             source_method_object_id,
             source_result_object_id,
             target_work_id,
-            json.dumps(target_context_json, ensure_ascii=False),
+            json.dumps(
+                _build_work_capsule(
+                    label=str(target_context_json["shared_method_label"]),
+                    support_count=int(target_context_json["support_count"]),
+                    score=float(target_context_json["score"]),
+                    source_method_object_id=source_method_object_id,
+                    target_work_id=target_work_id,
+                    target_title=str(target_context_json.get("target_title") or f"work-{target_work_id}"),
+                ),
+                ensure_ascii=False,
+            ),
             rationale_text,
             status,
         ),
@@ -242,6 +338,18 @@ def _insert_transfer_edge(
             src_method_object_id,
             dst_work_id,
             score,
-            json.dumps(evidence_json, ensure_ascii=False),
+            json.dumps(
+                [
+                    _build_evidence_bundle(
+                        target_work_id=dst_work_id,
+                        label=str(item["shared_method_label"]),
+                        support_count=int(item["support_count"]),
+                        score=score,
+                        ref_suffix="transfer",
+                    )
+                    for item in evidence_json
+                ],
+                ensure_ascii=False,
+            ),
         ),
     )

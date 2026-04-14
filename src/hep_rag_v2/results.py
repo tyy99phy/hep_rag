@@ -11,6 +11,7 @@ RESULT_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ("significance", "significance", re.compile(r"\b(significance|significant excess|observed excess)\b", re.IGNORECASE)),
     ("exclusion", "exclusion", re.compile(r"\b(exclude(?:d|s|ion)|exclusion limit)\b", re.IGNORECASE)),
 )
+OBJECT_CONTRACT_VERSION = "v1"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS result_objects (
@@ -96,6 +97,8 @@ def build_result_objects(
                 summary_text=_build_summary(title=str(work["title"] or ""), values=values, has_structured_text=has_structured_text),
                 values=values,
                 label=str(work["title"] or "").strip() or f"work-{work_id}-result",
+                source_kind="extraction",
+                content_source="chunks" if has_structured_text else "metadata_only",
             )
             _replace_result_values(conn, result_object_id=result_object_id, values=values)
             _replace_result_context(
@@ -117,6 +120,8 @@ def build_result_objects(
                 summary_text=None,
                 values=[],
                 label=f"work-{work_id}-result",
+                source_kind="extraction",
+                content_source="metadata_only",
             )
             summary["processed"] += 1
             summary["failed"] += 1
@@ -209,6 +214,69 @@ def _build_summary(*, title: str, values: list[dict[str, Any]], has_structured_t
     return " | ".join(part for part in parts if part)
 
 
+def _build_evidence_bundle(
+    *,
+    work_id: int,
+    label: str,
+    evidence_text: str,
+    source_kind: str,
+    content_source: str,
+    status: str,
+    confidence: float | None,
+    ref_suffix: str,
+) -> dict[str, Any]:
+    return {
+        "contract_version": OBJECT_CONTRACT_VERSION,
+        "object_type": "evidence_bundle",
+        "object_id": f"evidence_bundle:{work_id}:{ref_suffix}",
+        "source_kind": source_kind,
+        "status": status,
+        "source_refs": [f"work:{work_id}", f"evidence:{ref_suffix}", f"content_source:{content_source}"],
+        "derivation": "extracted",
+        "content_source": content_source,
+        "label": label,
+        "confidence": confidence,
+        "items": [
+            {
+                "kind": "text_span",
+                "ref": f"work:{work_id}",
+                "text": evidence_text,
+            }
+        ],
+    }
+
+
+def _build_result_signature(
+    value: dict[str, Any], *, work_id: int, source_kind: str, content_source: str, status: str, index: int
+) -> dict[str, Any]:
+    evidence_bundle = _build_evidence_bundle(
+        work_id=work_id,
+        label=str(value["label"]),
+        evidence_text=str(value["evidence_text"]),
+        source_kind=source_kind,
+        content_source=content_source,
+        status=status,
+        confidence=float(value.get("confidence") or 0.0),
+        ref_suffix=f"result:{index}",
+    )
+    return {
+        "contract_version": OBJECT_CONTRACT_VERSION,
+        "object_type": "result_signature",
+        "object_id": f"result_signature:{work_id}:{index}",
+        "work_id": work_id,
+        "source_kind": source_kind,
+        "status": status,
+        "source_refs": [f"work:{work_id}", f"result_value:{index}", f"content_source:{content_source}"],
+        "derivation": "normalized",
+        "content_source": content_source,
+        "result_kind": value["value_kind"],
+        "label": value["label"],
+        "confidence": value["confidence"],
+        "summary_text": value["evidence_text"],
+        "evidence_bundle": evidence_bundle,
+    }
+
+
 def _upsert_result_object(
     conn: sqlite3.Connection,
     *,
@@ -218,13 +286,37 @@ def _upsert_result_object(
     summary_text: str | None,
     values: list[dict[str, Any]],
     label: str,
+    source_kind: str,
+    content_source: str,
 ) -> int:
     signature_json = json.dumps(
-        [{"value_kind": value["value_kind"], "label": value["label"]} for value in values],
+        [
+            _build_result_signature(
+                value,
+                work_id=work_id,
+                source_kind=source_kind,
+                content_source=content_source,
+                status=status,
+                index=index,
+            )
+            for index, value in enumerate(values, start=1)
+        ],
         ensure_ascii=False,
     )
     evidence_json = json.dumps(
-        [{"label": value["label"], "evidence_text": value["evidence_text"]} for value in values],
+        [
+            _build_evidence_bundle(
+                work_id=work_id,
+                label=str(value["label"]),
+                evidence_text=str(value["evidence_text"]),
+                source_kind=source_kind,
+                content_source=content_source,
+                status=status,
+                confidence=float(value.get("confidence") or 0.0),
+                ref_suffix=f"result:{index}",
+            )
+            for index, value in enumerate(values, start=1)
+        ],
         ensure_ascii=False,
     )
     result_kind = values[0]["value_kind"] if values else None
