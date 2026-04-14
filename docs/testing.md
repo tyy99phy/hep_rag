@@ -211,7 +211,7 @@ hep-rag benchmark-manifest --model-label weak-model
 当前仓库还不适合直接测试：
 
 - 完整 PDG spine
-- typed result objects
-- typed method transfer objects
+- 完整落地的 typed result objects 生产路径
+- 完整落地的 typed method transfer 生产路径
 
-这些仍然属于后续架构演化方向。
+其中核心对象合同已在 `docs/hep-core-object-contracts.md` 中冻结为 substrate 规范，但代码层全面对齐仍属于后续架构演化方向。
