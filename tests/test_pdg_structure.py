@@ -102,9 +102,9 @@ class StructurePipelineTests(unittest.TestCase):
                     ).fetchone()
 
                 self.assertEqual(summary["processed"], 1)
-                self.assertEqual(summary["flagged"], 1)
+                self.assertEqual(summary["needs_review"], 1)
                 self.assertIsNotNone(row)
-                self.assertEqual(row["status"], "needs_attention")
+                self.assertEqual(row["status"], "needs_review")
                 self.assertEqual(row["anomaly_code"], "missing_required_signatures")
                 self.assertIn("result", str(row["anomaly_detail"]))
                 self.assertIn("method", str(row["anomaly_detail"]))
@@ -132,9 +132,9 @@ class StructurePipelineTests(unittest.TestCase):
                     ).fetchone()
 
                 self.assertEqual(summary["processed"], 1)
-                self.assertEqual(summary["review_relaxed"], 1)
+                self.assertEqual(summary["partial"], 1)
                 self.assertEqual(int(row["is_review"]), 1)
-                self.assertEqual(row["status"], "review_relaxed")
+                self.assertEqual(row["status"], "partial")
                 self.assertIsNone(row["anomaly_code"])
 
 

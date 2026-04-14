@@ -66,8 +66,9 @@ def build_work_structures(
     summary: dict[str, Any] = {
         "processed": 0,
         "ready": 0,
-        "flagged": 0,
-        "review_relaxed": 0,
+        "partial": 0,
+        "needs_review": 0,
+        "failed": 0,
         "items": [],
     }
     for work_id in selected_work_ids:
@@ -97,15 +98,15 @@ def build_work_structures(
                 missing.append("method")
 
         if is_review:
-            status = "review_relaxed"
+            status = "partial"
             anomaly_code = None
             anomaly_detail = None
-            summary["review_relaxed"] += 1
+            summary["partial"] += 1
         elif missing:
-            status = "needs_attention"
+            status = "needs_review"
             anomaly_code = "missing_required_signatures"
             anomaly_detail = f"missing: {', '.join(missing)}"
-            summary["flagged"] += 1
+            summary["needs_review"] += 1
         else:
             status = "ready"
             anomaly_code = None
