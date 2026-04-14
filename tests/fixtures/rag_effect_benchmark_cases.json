@@ -64,5 +64,16 @@
     "must_mention": ["definition", "relationship", "analysis"],
     "must_not_confuse": ["canonical object with one specific measurement"],
     "evidence_expectation": "答案应同时体现 canonical 定义与至少一条 paper 关联。"
+  },
+  {
+    "case_id": "thinking-engine-traceable-idea",
+    "category": "thinking_engine",
+    "prompt": "基于已有检索证据，给出一个可追踪的研究想法，并说明它依赖的 method transfer 线索和风险。",
+    "target_lane": "ideas_trace_future",
+    "database_value": "数据库应帮助模型把想法、method transfer 线索和 reasoning trace 绑定在一起，而不是只输出不可回放的灵感段落。",
+    "expected_failure_without_db": "弱模型容易生成看似合理但没有证据回链、没有方法迁移依据、也无法重放步骤的 idea。",
+    "must_mention": ["idea", "trace", "method transfer"],
+    "must_not_confuse": ["free-form brainstorming without evidence", "raw chain-of-thought dump"],
+    "evidence_expectation": "答案应体现 idea 候选、相关 method/work 证据以及可重放的 reasoning step 摘要。"
   }
 ]

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sqlite3
 import time
 import urllib.parse
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from hep_rag_v2 import paths
+from hep_rag_v2.benchmark_suite import build_benchmark_manifest, write_benchmark_manifest
 from hep_rag_v2.config import apply_runtime_config, default_config
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.fulltext import import_mineru_source, materialize_mineru_document
@@ -192,6 +192,15 @@ def cmd_ask(args: argparse.Namespace) -> None:
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def cmd_benchmark_manifest(args: argparse.Namespace) -> None:
+    output_path = Path(args.output).expanduser().resolve() if args.output else (
+        paths.workspace_root() / ".omx" / "benchmarks" / f"{args.model_label}-rag-effect-manifest.json"
+    )
+    manifest_path = write_benchmark_manifest(output_path, model_label=args.model_label)
+    payload = build_benchmark_manifest(model_label=args.model_label)
+    print(json.dumps({"output": str(manifest_path), **payload}, ensure_ascii=False, indent=2))
 
 
 def cmd_ingest_metadata(args: argparse.Namespace) -> None:
@@ -401,7 +410,6 @@ def cmd_enrich_inspire_metadata(args: argparse.Namespace) -> None:
 
         try:
             for row in targets:
-                work_id = int(row["work_id"])
                 inspire_id = str(row["inspire_id"] or "").strip()
                 has_citations = bool(row["has_citations"])
                 if not inspire_id:

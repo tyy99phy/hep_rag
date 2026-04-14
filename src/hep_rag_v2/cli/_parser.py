@@ -17,6 +17,7 @@ from .ingest import (
     cmd_reparse_pdfs,
     cmd_resolve_citations,
     cmd_search_works,
+    cmd_benchmark_manifest,
 )
 from .inspect import (
     cmd_audit_document,
@@ -106,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--model", default=None, help="Override embedding model")
     s.add_argument("--mode", choices=["answer", "survey", "idea"], default="answer")
     s.set_defaults(func=cmd_ask)
+
+    s = sub.add_parser("benchmark-manifest", help="Write the RAG effect benchmark manifest, including the thinking-engine trace scenario")
+    s.add_argument("--output", default=None, help="Manifest output path; defaults to <workspace>/.omx/benchmarks/<model>-rag-effect-manifest.json")
+    s.add_argument("--model-label", default="weak-model", help="Model label used in the manifest")
+    s.set_defaults(func=cmd_benchmark_manifest)
 
     s = sub.add_parser("init", help="Initialize local database and directories")
     s.add_argument("--config", default=None, help="Path to hep-rag.yaml")

@@ -173,10 +173,19 @@ python scripts/run_rag_effect_benchmark.py \
 1. `llm_only`
 2. `llm_plus_retrieve`
 3. `llm_plus_retrieve_and_structure`
+4. `thinking_engine_trace`
 
 也就是专门用来比较：
 
 > 同一个较弱模型，在“不接数据库”和“接数据库”时，表现差了多少。
+
+其中 `thinking_engine_trace` 会额外检查 phase-1 thinking-engine substrate：要求输出 idea 候选、method transfer 线索，以及可重放的 reasoning step 摘要，而不是只给自由发挥的长文本。
+
+如果只是确认 manifest 内容，也可以直接跑 CLI：
+
+```bash
+hep-rag benchmark-manifest --model-label weak-model
+```
 
 ## 6. 最小验收清单
 

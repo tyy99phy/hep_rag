@@ -64,6 +64,13 @@ def default_benchmark_scenarios() -> list[BenchmarkScenario]:
             retrieval_mode="typed_retrieval_shell",
             answer_mode="structured_grounded_generation",
         ),
+        BenchmarkScenario(
+            name="thinking_engine_trace",
+            description="接数据库，并要求系统输出带 reasoning trace 的 idea-generation substrate 结果。",
+            database_enabled=True,
+            retrieval_mode="typed_retrieval_with_trace",
+            answer_mode="trace_backed_idea_generation",
+        ),
     ]
 
 

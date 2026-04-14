@@ -225,6 +225,7 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 | `search-hybrid` | 混合检索（自动路由 work/chunk 级别） |
 | `query` | 检索证据（不调用 LLM） |
 | `ask` | 检索 + LLM 问答 |
+| `benchmark-manifest` | 导出 RAG effect / thinking-engine benchmark manifest |
 | `show-document` | 查看论文解析结果 |
 | `audit-document` | 审查解析质量 |
 | `show-graph` | 查看图谱邻居 |

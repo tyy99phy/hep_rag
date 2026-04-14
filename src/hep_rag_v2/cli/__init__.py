@@ -27,6 +27,7 @@ from .workspace import (
 # -- ingest commands -------------------------------------------------------
 from .ingest import (
     cmd_ask,
+    cmd_benchmark_manifest,
     cmd_bootstrap_legacy_corpus,
     cmd_enrich_inspire_metadata,
     cmd_fetch_papers,
@@ -81,6 +82,7 @@ __all__ = [
     "cmd_ingest_online",
     "cmd_query",
     "cmd_ask",
+    "cmd_benchmark_manifest",
     "cmd_ingest_metadata",
     "cmd_resolve_citations",
     "cmd_search_works",

@@ -35,9 +35,11 @@ class BenchmarkSuiteTests(unittest.TestCase):
             "llm_only",
             "llm_plus_retrieve",
             "llm_plus_retrieve_and_structure",
+            "thinking_engine_trace",
         ])
         self.assertFalse(scenarios[0].database_enabled)
         self.assertTrue(scenarios[1].database_enabled)
+        self.assertEqual(scenarios[-1].answer_mode, "trace_backed_idea_generation")
 
     def test_write_benchmark_manifest_exports_json(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -48,12 +50,13 @@ class BenchmarkSuiteTests(unittest.TestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(payload["model_label"], "tiny-model")
             self.assertGreaterEqual(payload["case_count"], 6)
-            self.assertEqual(payload["scenario_count"], 3)
+            self.assertEqual(payload["scenario_count"], 4)
 
     def test_manifest_exposes_target_lanes(self) -> None:
         manifest = build_benchmark_manifest(model_label="weak-model")
         self.assertIn("works_chunks", manifest["target_lanes"])
         self.assertIn("methods_future", manifest["target_lanes"])
+        self.assertIn("thinking_engine", manifest["categories"])
 
 
 if __name__ == "__main__":
