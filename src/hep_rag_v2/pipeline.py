@@ -12,6 +12,7 @@ from hep_rag_v2.config import runtime_collection_config
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.maintenance import clear_dirty_work_ids, mark_work_dirty
 from hep_rag_v2.methods import build_method_objects
+from hep_rag_v2.ontology import rebuild_ontology_summaries
 from hep_rag_v2.results import build_result_objects
 from hep_rag_v2.structure import build_work_structures
 from hep_rag_v2.transfer import build_transfer_candidates
@@ -130,12 +131,16 @@ def _sync_thinking_engine_extractions(
     work_ids: list[int],
 ) -> dict[str, Any]:
     if not work_ids:
-        return {"structure": None, "results": None, "methods": None, "transfer": None}
+        return {"structure": None, "results": None, "methods": None, "transfer": None, "ontology": None}
     summaries = {
         "structure": build_work_structures(conn, work_ids=work_ids, collection=collection_name),
         "results": build_result_objects(conn, work_ids=work_ids, collection=collection_name),
         "methods": build_method_objects(conn, work_ids=work_ids, collection=collection_name),
         "transfer": build_transfer_candidates(conn, work_ids=work_ids, collection=collection_name),
+        "ontology": {
+            "collection": rebuild_ontology_summaries(conn, collection=collection_name),
+            "all": rebuild_ontology_summaries(conn, collection=None),
+        },
     }
     clear_dirty_work_ids(conn, lane="structure", collection=collection_name, work_ids=work_ids)
     clear_dirty_work_ids(conn, lane="results", collection=collection_name, work_ids=work_ids)

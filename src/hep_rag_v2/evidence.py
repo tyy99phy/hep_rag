@@ -164,6 +164,7 @@ def _coerce_result(item: Mapping[str, Any] | TypedRetrievalResult) -> TypedRetri
         return item
     object_type = str(item.get("object_type") or item.get("source_type") or "").strip()
     typed_specs = {
+        "ontology_summary": "summary_id",
         "result_object": "result_id",
         "method_object": "method_id",
         "transfer_candidate": "transfer_id",

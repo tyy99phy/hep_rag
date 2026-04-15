@@ -676,6 +676,7 @@
               <option value="">auto</option>
               <option value="works">works</option>
               <option value="chunks">chunks</option>
+              <option value="ontology">ontology</option>
             </select>
           </div>
           <div>
@@ -839,12 +840,17 @@
         badge(`Documents ${snapshot.documents ?? 0}`),
         badge(`Chunks ${snapshot.chunks ?? 0}`),
         badge(`Collections ${snapshot.collections ?? 0}`),
+        badge(`Ontology ${snapshot.ontology_summaries ?? 0}`),
         `</div>`,
         `<div class="result-kv">`,
         resultRow("Authors", snapshot.authors ?? 0),
         resultRow("Venues", snapshot.venues ?? 0),
         resultRow("Topics", snapshot.topics ?? 0),
         resultRow("Citations", snapshot.citations ?? 0),
+        resultRow("Ontology collaboration summaries", snapshot.ontology_collaboration_summaries ?? 0),
+        resultRow("Ontology topic summaries", snapshot.ontology_topic_summaries ?? 0),
+        resultRow("Ontology result summaries", snapshot.ontology_result_summaries ?? 0),
+        resultRow("Ontology method summaries", snapshot.ontology_method_summaries ?? 0),
         `</div>`,
         `</div>`,
         `<div class="result-section">`,
@@ -893,6 +899,7 @@
     }
 
     function renderRetrieveResult(data) {
+      const ontology = Array.isArray(data.ontology_summaries) ? data.ontology_summaries : [];
       const works = Array.isArray(data.works) ? data.works : [];
       const chunks = Array.isArray(data.evidence_chunks) ? data.evidence_chunks : [];
       const routing = data.routing || {};
@@ -905,10 +912,17 @@
         badge(`Scope ${escapeHtml(scope.label)}`),
         badge(`Requested ${escapeHtml(data.requested_target || "auto")}`),
         badge(`Routed ${escapeHtml(routedTo)}`),
+        badge(`Ontology ${ontology.length}`),
         badge(`Works ${works.length}`),
         badge(`Chunks ${chunks.length}`),
         `</div>`,
-        `<div class="result-note">Retrieve always returns both work-level evidence and chunk-level evidence. If you want chunk-first retrieval, set Target to <code>chunks</code>.</div>`,
+        `<div class="result-note">Retrieve can now expose ontology summaries above works/chunks. Use <code>ontology</code> for summary-first retrieval, or keep <code>auto</code> / <code>works</code> for mixed evidence.</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Ontology Summaries</h3>`,
+        ontology.length
+          ? `<div class="result-list">${ontology.map(renderOntologySummaryCard).join("")}</div>`
+          : `<div class="result-note">No ontology summaries were attached for this query.</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Works</h3>`,
@@ -926,6 +940,7 @@
     }
 
     function renderAskResult(data) {
+      const ontology = Array.isArray(data.evidence?.ontology_summaries) ? data.evidence.ontology_summaries : [];
       const works = Array.isArray(data.evidence?.works) ? data.evidence.works : [];
       const chunks = Array.isArray(data.evidence?.chunks) ? data.evidence.chunks : [];
       const scope = normalizeSearchScopePayload(data.search_scope, data.collection);
@@ -936,18 +951,25 @@
         badge(`Scope ${escapeHtml(scope.label)}`),
         badge(`Mode ${escapeHtml(data.mode || "answer")}`),
         badge(`Model ${escapeHtml(data.llm_model || data.llm_backend || "unknown")}`),
+        badge(`Ontology ${ontology.length}`),
         badge(`Works ${works.length}`),
         badge(`Chunks ${chunks.length}`),
         `</div>`,
-        `<div class="result-subtitle">Display mode now renders the answer as Markdown. Click citations like [W1] or [C2] to jump to the matching evidence card below.</div>`,
+        `<div class="result-subtitle">Display mode now renders the answer as Markdown. Click citations like [O1], [W1], or [C2] to jump to the matching evidence card below.</div>`,
         `<div class="result-answer md-content">${renderMarkdown(data.answer || "")}</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Evidence Snapshot</h3>`,
         `<div class="evidence-overview">`,
         `<div class="result-note">Paper-level evidence gives the document identity and coarse context. Chunk-level evidence carries the fine-grained passage text that should support the answer.</div>`,
-        `<div class="result-note">Answer citations are now clickable and will scroll to the matching work or chunk evidence.</div>`,
+        `<div class="result-note">Ontology summaries give you the high-level substrate. Answer citations are clickable and will scroll to the matching ontology, work, or chunk evidence.</div>`,
         `</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Evidence Ontology Summaries</h3>`,
+        ontology.length
+          ? `<div class="result-list">${ontology.map((item, index) => renderOntologySummaryCard(item, { emphasizeEvidence: true, refType: "O", refIndex: index + 1 })).join("")}</div>`
+          : `<div class="result-note">No ontology summaries attached.</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Evidence Works</h3>`,
@@ -1071,6 +1093,53 @@
               </div>
             </details>
           ` : ``}
+        </div>
+      `;
+    }
+
+    function renderOntologySummaryCard(item, options = {}) {
+      const summaryText = truncateText(item.summary_text || item.summary || item.text || "", options.emphasizeEvidence ? 360 : 260) || "No ontology summary text available.";
+      const representativeWorks = Array.isArray(item.representative_works) ? item.representative_works : [];
+      const evidenceRef = options.refType && options.refIndex ? `${options.refType}${options.refIndex}` : "";
+      const evidenceAttrs = evidenceRef
+        ? ` id="${escapeHtml(evidenceRefId(evidenceRef))}" class="result-card evidence-target"`
+        : ` class="result-card"`;
+      return `
+        <div${evidenceAttrs}>
+          <div class="result-card-title">${escapeHtml(item.label || item.title || "Ontology summary")}</div>
+          <div class="result-card-subtitle">${escapeHtml(String(item.facet_kind || "ontology_summary").replaceAll("_", " "))}</div>
+          <div class="result-card-meta">
+            ${evidenceRef ? badge(`Ref ${escapeHtml(evidenceRef)}`) : ``}
+            ${badge(`Rank ${item.rank ?? "-"}`)}
+            ${badge(`Score ${formatScore(item.hybrid_score)}`)}
+            ${badge(`Works ${item.work_count ?? 0}`)}
+            ${badge(`Signals ${item.signal_count ?? 0}`)}
+          </div>
+          <div class="result-card-copy">${escapeHtml(summaryText)}</div>
+          ${representativeWorks.length ? `
+            <details class="result-details">
+              <summary>Representative works (${representativeWorks.length})</summary>
+              <div class="related-list">
+                ${representativeWorks.map(renderOntologyRepresentativeWork).join("")}
+              </div>
+            </details>
+          ` : ``}
+        </div>
+      `;
+    }
+
+    function renderOntologyRepresentativeWork(item) {
+      return `
+        <div class="related-item">
+          <div class="result-card-title">${escapeHtml(item.title || "Representative work")}</div>
+          <div class="result-card-meta">
+            ${badge(`Year ${item.year ?? "?"}`)}
+            ${badge(`${escapeHtml(item.canonical_source || "id")}:${escapeHtml(String(item.canonical_id || item.work_id || ""))}`)}
+          </div>
+          ${renderExternalLinkRow({
+            canonicalSource: item.canonical_source,
+            canonicalId: item.canonical_id,
+          })}
         </div>
       `;
     }
@@ -1345,7 +1414,7 @@
 
       let html = escapeHtml(tokenized);
       html = html.replace(
-        /\[([WC]\d+)\]/g,
+        /\[([WCO]\d+)\]/g,
         (_, ref) => `<a href="#${escapeHtml(evidenceRefId(ref))}" class="md-ref-link" data-evidence-ref="${escapeHtml(ref)}"><span class="md-ref">[${escapeHtml(ref)}]</span></a>`
       );
       html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");

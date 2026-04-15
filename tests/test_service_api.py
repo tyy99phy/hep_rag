@@ -33,6 +33,7 @@ class ServiceLayerTests(unittest.TestCase):
 
                 status = workspace_status_payload()
                 self.assertEqual(status["snapshot"]["works"], 2)
+                self.assertIn("ontology_summaries", status["snapshot"])
                 self.assertEqual(status["collections"][0]["collection"], "default")
                 self.assertEqual(status["search_scopes"][0]["key"], "all")
                 self.assertEqual(status["search_scopes"][0]["label"], "All Collections")
@@ -71,6 +72,7 @@ class ApiLayerTests(unittest.TestCase):
                     self.assertIn("hep-rag Console", response.text)
                     self.assertIn("Search Scope", response.text)
                     self.assertIn("All Collections", response.text)
+                    self.assertIn('<option value="ontology">ontology</option>', response.text)
                     self.assertIn("/workspace/status", response.text)
                     self.assertIn("/auth/status", response.text)
                     health = client.get("/health").json()

@@ -303,6 +303,7 @@ def _adapt_typed_collections(
     collection: str | None = None,
 ) -> tuple[TypedRetrievalResult, ...]:
     groups = (
+        ("ontology_summaries", "ontology_summary", "summary_id"),
         ("result_objects", "result_object", "result_id"),
         ("method_objects", "method_object", "method_id"),
         ("transfer_candidates", "transfer_candidate", "transfer_id"),
@@ -327,6 +328,7 @@ def adapt_typed_hit(
     object_id = identifier if identifier and ":" in identifier else f"{object_type}:{identifier}" if identifier else None
     content = (
         row.get("summary")
+        or row.get("summary_text")
         or row.get("description")
         or row.get("text")
         or row.get("content")

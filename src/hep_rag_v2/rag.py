@@ -5,8 +5,10 @@ from typing import Any, Callable
 from hep_rag_v2.config import resolve_embedding_settings
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.metadata import expand_work_ids_with_family, family_payload_map
+from hep_rag_v2.ontology import search_ontology_summaries
 from hep_rag_v2.providers.local_transformers import LocalTransformersClient
 from hep_rag_v2.providers.openai_compatible import OpenAICompatibleClient
+from hep_rag_v2.query import is_relation_query, is_result_query
 from hep_rag_v2.search_scope import normalize_search_scope
 from hep_rag_v2.vector import (
     DEFAULT_VECTOR_MODEL,
@@ -66,6 +68,7 @@ def retrieve(
     configure_embedding_runtime(model=embedding_model, settings=embedding_settings)
     limit_value = max(1, int(limit or retrieval_cfg.get("limit") or 8))
     chunk_limit = max(limit_value, int(retrieval_cfg.get("chunk_limit") or max(limit_value, 12)))
+    ontology_limit = max(1, int(retrieval_cfg.get("ontology_limit") or min(limit_value, 4)))
     retrieval_workers = _resolve_parallelism(
         requested=max_parallelism,
         configured=retrieval_cfg.get("max_parallelism"),
@@ -85,7 +88,34 @@ def retrieve(
         graph_expand = routing.get("graph_expand") or 0
 
     with connect() as conn:
-        if actual_target == "works":
+        ontology_summaries: list[dict[str, Any]] = []
+        if actual_target == "ontology":
+            _emit_progress(progress, "searching ontology summaries...")
+            ontology_summaries = search_ontology_summaries(
+                conn,
+                query=query,
+                collection=collection,
+                limit=ontology_limit,
+            )
+            representative_work_ids = _ontology_representative_work_ids(
+                ontology_summaries,
+                limit=max(limit_value * 2, ontology_limit * 4),
+            )
+            works = _hydrate_works_by_ids(conn, work_ids=representative_work_ids, limit=limit_value)
+            if works:
+                _emit_progress(progress, "collecting supporting chunks from ontology summaries...")
+                chunks = _supporting_chunks(
+                    conn,
+                    query=query,
+                    collection=collection,
+                    model=embedding_model,
+                    work_ids=[int(row["work_id"]) for row in works],
+                    limit=chunk_limit,
+                    max_parallelism=retrieval_workers,
+                )
+            else:
+                chunks = []
+        elif actual_target == "works":
             _emit_progress(progress, "searching works...")
             works = search_works_hybrid(
                 conn,
@@ -107,6 +137,14 @@ def retrieve(
                 limit=chunk_limit,
                 max_parallelism=retrieval_workers,
             )
+            if _should_attach_ontology_summaries(query=query, actual_target=actual_target):
+                _emit_progress(progress, "attaching ontology summaries...")
+                ontology_summaries = search_ontology_summaries(
+                    conn,
+                    query=query,
+                    collection=collection,
+                    limit=ontology_limit,
+                )
         else:
             _emit_progress(progress, "searching chunks...")
             chunks = search_chunks_hybrid(
@@ -132,6 +170,7 @@ def retrieve(
             "reasons": list(routing.get("reasons") or []),
         },
         "model": embedding_model,
+        "ontology_summaries": ontology_summaries,
         "works": works,
         "evidence_chunks": chunks,
     }
@@ -167,6 +206,8 @@ def ask(
     evidence_limit = max(1, int((config.get("retrieval") or {}).get("answer_evidence_limit") or 6))
     evidence_chunks = retrieval["evidence_chunks"][:evidence_limit]
     evidence_works = retrieval["works"][: max(3, min(len(retrieval["works"]), evidence_limit))]
+    ontology_summaries = list(retrieval.get("ontology_summaries") or [])
+    evidence_ontology = ontology_summaries[: max(2, min(len(ontology_summaries), 4))]
 
     client = _build_llm_client(llm_cfg)
     messages = _build_answer_messages(
@@ -174,6 +215,7 @@ def ask(
         mode=mode,
         works=evidence_works,
         chunks=evidence_chunks,
+        ontology_summaries=evidence_ontology,
     )
     _emit_progress(progress, "generating answer with LLM...")
     answer = client.chat(
@@ -195,6 +237,7 @@ def ask(
         "evidence": {
             "works": evidence_works,
             "chunks": evidence_chunks,
+            "ontology_summaries": evidence_ontology,
         },
     }
 
@@ -343,6 +386,7 @@ def _build_answer_messages(
     mode: str,
     works: list[dict[str, Any]],
     chunks: list[dict[str, Any]],
+    ontology_summaries: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     mode_text = {
         "answer": "直接回答问题，并明确区分结论、证据、不确定性。",
@@ -377,9 +421,33 @@ def _build_answer_messages(
             f"section={item.get('section_hint')}\n{snippet}"
         )
 
+    ontology_lines = []
+    for idx, item in enumerate(ontology_summaries, start=1):
+        summary_text = " ".join(str(item.get("summary_text") or item.get("summary") or "").split())
+        if len(summary_text) > 500:
+            summary_text = summary_text[:500].rstrip() + " ..."
+        representative = list(item.get("representative_works") or [])[:3]
+        representative_text = "; ".join(
+            f"{work.get('title')} ({work.get('year')})"
+            for work in representative
+            if isinstance(work, dict) and work.get("title")
+        )
+        header = (
+            f"[O{idx}] {item.get('label') or item.get('title')} "
+            f"| facet={item.get('facet_kind')} "
+            f"| works={item.get('work_count') or 0} "
+            f"| signals={item.get('signal_count') or 0}"
+        )
+        if representative_text:
+            header += f"\nrepresentative works: {representative_text}"
+        ontology_lines.append(f"{header}\n{summary_text}")
+
     user_prompt = (
         f"用户问题:\n{query}\n\n"
         f"写作模式:\n{mode_text}\n\n"
+        "可用 ontology summaries:\n"
+        + ("\n\n".join(ontology_lines) if ontology_lines else "(none)")
+        + "\n\n"
         "可用论文列表:\n"
         + ("\n".join(work_lines) if work_lines else "(none)")
         + "\n\n可用证据片段:\n"
@@ -387,7 +455,7 @@ def _build_answer_messages(
         + "\n\n要求:\n"
         "1. 只能基于上面证据作答，不要补造未给出的论文结论。\n"
         "2. 如果证据不足，要明确说不足在哪里。\n"
-        "3. 回答时尽量引用 [W1] / [C2] 这种编号，便于回溯。\n"
+        "3. 回答时尽量引用 [O1] / [W1] / [C2] 这种编号，便于回溯。\n"
         "4. 使用与用户问题相同的语言。"
     )
     return [
@@ -400,3 +468,78 @@ def _build_answer_messages(
             "content": user_prompt,
         },
     ]
+
+
+def _should_attach_ontology_summaries(*, query: str, actual_target: str) -> bool:
+    if actual_target == "ontology":
+        return True
+    if actual_target != "works":
+        return False
+    return is_relation_query(query) or is_result_query(query)
+
+
+def _ontology_representative_work_ids(
+    summaries: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[int]:
+    work_ids: list[int] = []
+    seen: set[int] = set()
+    for summary in summaries:
+        for item in list(summary.get("representative_works") or []):
+            if not isinstance(item, dict) or item.get("work_id") is None:
+                continue
+            work_id = int(item["work_id"])
+            if work_id in seen:
+                continue
+            seen.add(work_id)
+            work_ids.append(work_id)
+            if len(work_ids) >= limit:
+                return work_ids
+    return work_ids
+
+
+def _hydrate_works_by_ids(
+    conn: Any,
+    *,
+    work_ids: list[int],
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not work_ids:
+        return []
+    selected_ids = []
+    seen: set[int] = set()
+    for work_id in work_ids:
+        key = int(work_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        selected_ids.append(key)
+        if len(selected_ids) >= limit:
+            break
+    if not selected_ids:
+        return []
+    family_map = family_payload_map(conn, work_ids=selected_ids)
+    rows = conn.execute(
+        """
+        SELECT work_id, year, canonical_source, canonical_id, title AS raw_title
+        FROM works
+        WHERE work_id IN ({placeholders})
+        ORDER BY work_id
+        """.format(placeholders=",".join("?" for _ in selected_ids)),
+        selected_ids,
+    ).fetchall()
+    row_map = {int(row["work_id"]): dict(row) for row in rows}
+    out: list[dict[str, Any]] = []
+    for rank, work_id in enumerate(selected_ids, start=1):
+        row = row_map.get(work_id)
+        if row is None:
+            continue
+        row["rank"] = rank
+        row["search_type"] = "ontology_support"
+        row["hybrid_score"] = 0.0
+        family_payload = family_map.get(work_id)
+        if family_payload is not None:
+            row.update(family_payload)
+        out.append(row)
+    return out
