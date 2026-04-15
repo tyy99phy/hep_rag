@@ -28,6 +28,21 @@ class BenchmarkSuiteTests(unittest.TestCase):
         self.assertIn("latest_result_summary", {item.category for item in cases})
         self.assertIn("method_transfer", {item.category for item in cases})
 
+    def test_default_case_fixture_includes_object_gold_fields(self) -> None:
+        cases = load_benchmark_cases(default_case_fixture_path(repo_root=ROOT))
+        result_case = next(item for item in cases if item.case_id == "result-expected-vs-observed")
+        trace_case = next(item for item in cases if item.case_id == "thinking-engine-traceable-idea")
+
+        self.assertGreaterEqual(len(result_case.gold_evidence_ids), 1)
+        self.assertEqual(result_case.gold_result_signature, "expected_vs_observed_limit")
+        self.assertIsNone(result_case.gold_method_signature)
+        self.assertEqual(trace_case.gold_method_signature, "method_transfer_traceable_idea")
+        self.assertEqual(trace_case.gold_trace_outline, (
+            "retrieve_method_evidence",
+            "compare_transfer_candidates",
+            "state_risk_and_next_check",
+        ))
+
     def test_default_scenarios_cover_ablation_matrix(self) -> None:
         scenarios = default_benchmark_scenarios()
 
@@ -63,6 +78,26 @@ class BenchmarkSuiteTests(unittest.TestCase):
         self.assertEqual(
             manifest["contract_wire_format"]["required_fields"],
             ["object_id", "source_kind", "status", "source_refs", "derivation"],
+        )
+        self.assertEqual(
+            manifest["object_gold_fields"],
+            [
+                "gold_evidence_ids",
+                "gold_result_signature",
+                "gold_method_signature",
+                "gold_trace_outline",
+            ],
+        )
+        self.assertGreaterEqual(manifest["object_gold_case_count"], 4)
+        trace_case = next(item for item in manifest["cases"] if item["case_id"] == "thinking-engine-traceable-idea")
+        self.assertEqual(trace_case["gold_method_signature"], "method_transfer_traceable_idea")
+        self.assertEqual(
+            trace_case["gold_trace_outline"],
+            [
+                "retrieve_method_evidence",
+                "compare_transfer_candidates",
+                "state_risk_and_next_check",
+            ],
         )
 
 

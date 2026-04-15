@@ -18,6 +18,10 @@ class BenchmarkCase:
     must_mention: tuple[str, ...]
     must_not_confuse: tuple[str, ...]
     evidence_expectation: str
+    gold_evidence_ids: tuple[str, ...] = ()
+    gold_result_signature: str | None = None
+    gold_method_signature: str | None = None
+    gold_trace_outline: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +106,12 @@ def build_benchmark_manifest(
             for contract in scenario.contract_targets
         }
     )
+    object_gold_fields = [
+        "gold_evidence_ids",
+        "gold_result_signature",
+        "gold_method_signature",
+        "gold_trace_outline",
+    ]
     return {
         "model_label": model_label,
         "case_count": len(loaded_cases),
@@ -119,8 +129,17 @@ def build_benchmark_manifest(
                 "derivation",
             ],
         },
-        "cases": [asdict(item) for item in loaded_cases],
-        "scenarios": [asdict(item) for item in loaded_scenarios],
+        "object_gold_fields": object_gold_fields,
+        "object_gold_case_count": sum(
+            1
+            for item in loaded_cases
+            if item.gold_evidence_ids
+            or item.gold_result_signature is not None
+            or item.gold_method_signature is not None
+            or item.gold_trace_outline
+        ),
+        "cases": [_json_ready(asdict(item)) for item in loaded_cases],
+        "scenarios": [_json_ready(asdict(item)) for item in loaded_scenarios],
     }
 
 
@@ -152,4 +171,18 @@ def _coerce_case(item: Any) -> BenchmarkCase:
         must_mention=tuple(str(token) for token in item.get("must_mention") or []),
         must_not_confuse=tuple(str(token) for token in item.get("must_not_confuse") or []),
         evidence_expectation=str(item["evidence_expectation"]),
+        gold_evidence_ids=tuple(str(token) for token in item.get("gold_evidence_ids") or []),
+        gold_result_signature=_coerce_optional_string(item.get("gold_result_signature")),
+        gold_method_signature=_coerce_optional_string(item.get("gold_method_signature")),
+        gold_trace_outline=tuple(str(token) for token in item.get("gold_trace_outline") or []),
     )
+
+
+def _coerce_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _json_ready(payload: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(payload, ensure_ascii=False))
