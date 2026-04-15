@@ -661,8 +661,10 @@
             <textarea id="query">vector boson scattering at the LHC</textarea>
           </div>
           <div>
-            <label for="collection">Collection</label>
-            <input id="collection" placeholder="default">
+            <label for="search-scope">Search Scope</label>
+            <select id="search-scope">
+              <option value="all">All Collections</option>
+            </select>
           </div>
           <div>
             <label for="limit">Limit</label>
@@ -730,11 +732,13 @@
     const TOKEN_STORAGE_KEY = "hep-rag-api-token";
     const RESULT_MODE_STORAGE_KEY = "hep-rag-result-mode";
     const PARALLELISM_STORAGE_KEY = "hep-rag-max-parallelism";
+    const SEARCH_SCOPE_STORAGE_KEY = "hep-rag-search-scope";
     const state = {
       currentJobId: null,
       pollTimer: null,
       lastEventSeq: 0,
       authEnabled: false,
+      searchScopes: [],
       resultMode: window.localStorage.getItem(RESULT_MODE_STORAGE_KEY) || "display",
       resultData: "Loading workspace status...",
     };
@@ -747,6 +751,7 @@
     const authStatusEl = document.getElementById("auth-strip");
     const tokenInputEl = document.getElementById("api-token");
     const maxParallelismInputEl = document.getElementById("max-parallelism");
+    const searchScopeEl = document.getElementById("search-scope");
     const resultDisplayBtnEl = document.getElementById("result-display-btn");
     const resultRawBtnEl = document.getElementById("result-raw-btn");
 
@@ -825,6 +830,7 @@
     function renderWorkspaceResult(data) {
       const snapshot = data.snapshot || {};
       const collections = Array.isArray(data.collections) ? data.collections : [];
+      const searchScopes = Array.isArray(data.search_scopes) ? data.search_scopes : [];
       return [
         `<div class="result-section">`,
         `<h3>Workspace Snapshot</h3>`,
@@ -840,6 +846,21 @@
         resultRow("Topics", snapshot.topics ?? 0),
         resultRow("Citations", snapshot.citations ?? 0),
         `</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Search Scopes</h3>`,
+        searchScopes.length
+          ? `<div class="result-list">${searchScopes.map((item) => `
+              <div class="result-card">
+                <div class="result-card-title">${escapeHtml(item.label || item.key || "scope")}</div>
+                <div class="result-card-meta">
+                  ${badge(`Kind ${escapeHtml(item.kind || "scope")}`)}
+                  ${badge(`Works ${item.works ?? 0}`)}
+                  ${item.is_writable ? badge(`Writable`) : badge(`Read-only`)}
+                </div>
+              </div>
+            `).join("")}</div>`
+          : `<div class="result-note">No search scopes are available yet.</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Collections</h3>`,
@@ -876,10 +897,12 @@
       const chunks = Array.isArray(data.evidence_chunks) ? data.evidence_chunks : [];
       const routing = data.routing || {};
       const routedTo = routing.target || data.requested_target || "auto";
+      const scope = normalizeSearchScopePayload(data.search_scope, data.collection);
       return [
         `<div class="result-section">`,
         `<h3>Retrieve</h3>`,
         `<div class="result-meta">`,
+        badge(`Scope ${escapeHtml(scope.label)}`),
         badge(`Requested ${escapeHtml(data.requested_target || "auto")}`),
         badge(`Routed ${escapeHtml(routedTo)}`),
         badge(`Works ${works.length}`),
@@ -905,10 +928,12 @@
     function renderAskResult(data) {
       const works = Array.isArray(data.evidence?.works) ? data.evidence.works : [];
       const chunks = Array.isArray(data.evidence?.chunks) ? data.evidence.chunks : [];
+      const scope = normalizeSearchScopePayload(data.search_scope, data.collection);
       return [
         `<div class="result-section">`,
         `<h3>Answer</h3>`,
         `<div class="result-meta">`,
+        badge(`Scope ${escapeHtml(scope.label)}`),
         badge(`Mode ${escapeHtml(data.mode || "answer")}`),
         badge(`Model ${escapeHtml(data.llm_model || data.llm_backend || "unknown")}`),
         badge(`Works ${works.length}`),
@@ -1346,7 +1371,7 @@
     function readBasePayload() {
       return {
         query: document.getElementById("query").value.trim(),
-        collection_name: blankToNull(document.getElementById("collection").value),
+        collection_name: blankToNull(searchScopeEl.value),
         limit: parseOptionalInt(document.getElementById("limit").value),
         max_parallelism: parseOptionalInt(document.getElementById("max-parallelism").value),
         target: blankToNull(document.getElementById("target").value),
@@ -1361,6 +1386,62 @@
     function blankToNull(value) {
       const text = String(value || "").trim();
       return text ? text : null;
+    }
+
+    function normalizeSearchScopePayload(scope, legacyCollection) {
+      if (scope && typeof scope === "object") {
+        return {
+          key: String(scope.key || "all"),
+          label: String(scope.label || scope.collection_name || legacyCollection || "All Collections"),
+          kind: String(scope.kind || "all"),
+          collection_name: scope.collection_name ? String(scope.collection_name) : null,
+          is_writable: !!scope.is_writable,
+          works: Number(scope.works ?? 0),
+        };
+      }
+      if (legacyCollection && legacyCollection !== "all") {
+        return {
+          key: `collection:${legacyCollection}`,
+          label: String(legacyCollection),
+          kind: "collection",
+          collection_name: String(legacyCollection),
+          is_writable: true,
+          works: 0,
+        };
+      }
+      return {
+        key: "all",
+        label: "All Collections",
+        kind: "all",
+        collection_name: null,
+        is_writable: false,
+        works: 0,
+      };
+    }
+
+    function applySearchScopes(searchScopes) {
+      const scopes = Array.isArray(searchScopes) && searchScopes.length
+        ? searchScopes.map((item) => normalizeSearchScopePayload(item, item?.collection_name))
+        : [normalizeSearchScopePayload(null, null)];
+      state.searchScopes = scopes;
+      const previous = searchScopeEl.value || window.localStorage.getItem(SEARCH_SCOPE_STORAGE_KEY) || "all";
+      searchScopeEl.innerHTML = scopes.map((item) => {
+        const worksText = item.kind === "all" ? "" : ` (${item.works ?? 0} works)`;
+        return `<option value="${escapeHtml(item.key)}">${escapeHtml(item.label)}${escapeHtml(worksText)}</option>`;
+      }).join("");
+      const matched = scopes.find((item) => item.key === previous) || scopes[0];
+      searchScopeEl.value = matched.key;
+      window.localStorage.setItem(SEARCH_SCOPE_STORAGE_KEY, matched.key);
+    }
+
+    function selectedSearchScope() {
+      const selected = state.searchScopes.find((item) => item.key === searchScopeEl.value);
+      return selected || normalizeSearchScopePayload(null, null);
+    }
+
+    function selectedWritableCollectionName() {
+      const scope = selectedSearchScope();
+      return scope.kind === "collection" ? scope.collection_name : null;
     }
 
     function buildAuthHeaders() {
@@ -1409,6 +1490,8 @@
         document.getElementById("stat-documents").textContent = data.snapshot.documents ?? "-";
         document.getElementById("stat-chunks").textContent = data.snapshot.chunks ?? "-";
         document.getElementById("stat-citations").textContent = data.snapshot.citations ?? "-";
+        applySearchScopes(data.search_scopes);
+        setResult(data);
         setStatus("Workspace status updated.");
       } catch (error) {
         setStatus(`Workspace refresh failed: ${error.message}`);
@@ -1475,6 +1558,11 @@
       const payload = readBasePayload();
       if (!payload.query) return setStatus("Query is required.");
       if (state.authEnabled && !readToken()) return setStatus("API token required.");
+      const writableCollection = selectedWritableCollectionName();
+      if (!writableCollection) {
+        return setStatus("Ingest requires a concrete collection. Switch Search Scope from All Collections to a writable collection first.");
+      }
+      payload.collection_name = writableCollection;
       payload.download_limit = parseOptionalInt(document.getElementById("download-limit").value);
       payload.parse_limit = parseOptionalInt(document.getElementById("parse-limit").value);
       payload.max_parallelism = parseOptionalInt(document.getElementById("max-parallelism").value);
@@ -1546,6 +1634,9 @@
       } else {
         window.localStorage.removeItem(PARALLELISM_STORAGE_KEY);
       }
+    });
+    searchScopeEl.addEventListener("change", () => {
+      window.localStorage.setItem(SEARCH_SCOPE_STORAGE_KEY, searchScopeEl.value);
     });
     tokenInputEl.addEventListener("change", () => {
       if (!state.authEnabled || readToken()) {

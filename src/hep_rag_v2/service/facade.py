@@ -70,7 +70,7 @@ class HepRagServiceFacade:
         registry.register_retrieval(
             {
                 "query": query,
-                "collection": collection_name,
+                "collection": payload.get("collection"),
                 "requested_target": target,
                 "routing": {"target": target or "answer", "graph_expand": 0, "reasons": ["answer_evidence"]},
                 "model": model,

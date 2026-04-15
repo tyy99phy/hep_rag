@@ -7,6 +7,7 @@ from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.metadata import expand_work_ids_with_family, family_payload_map
 from hep_rag_v2.providers.local_transformers import LocalTransformersClient
 from hep_rag_v2.providers.openai_compatible import OpenAICompatibleClient
+from hep_rag_v2.search_scope import normalize_search_scope
 from hep_rag_v2.vector import (
     DEFAULT_VECTOR_MODEL,
     configure_embedding_runtime,
@@ -57,7 +58,8 @@ def retrieve(
 ) -> dict[str, Any]:
     ensure_db()
     retrieval_cfg = config.get("retrieval") or {}
-    collection = collection_name or str((config.get("collection") or {}).get("name") or "default")
+    search_scope = normalize_search_scope(collection_name)
+    collection = search_scope.collection_name
     requested_target = str(target or retrieval_cfg.get("target") or "auto")
     embedding_settings = resolve_embedding_settings(config, model=model)
     embedding_model = str(embedding_settings.get("model") or DEFAULT_VECTOR_MODEL)
@@ -120,7 +122,8 @@ def retrieve(
 
     return {
         "query": query,
-        "collection": collection,
+        "collection": collection or "all",
+        "search_scope": search_scope.to_payload(),
         "max_parallelism": retrieval_workers,
         "requested_target": requested_target,
         "routing": {
@@ -181,6 +184,11 @@ def ask(
     return {
         "query": query,
         "mode": mode,
+        "collection": retrieval.get("collection"),
+        "search_scope": retrieval.get("search_scope"),
+        "requested_target": retrieval.get("requested_target"),
+        "routing": retrieval.get("routing"),
+        "retrieval_model": retrieval.get("model"),
         "llm_backend": str(llm_cfg.get("backend") or "openai_compatible"),
         "llm_model": answer["model"],
         "answer": answer["content"],

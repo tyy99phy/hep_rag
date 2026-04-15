@@ -34,6 +34,9 @@ class ServiceLayerTests(unittest.TestCase):
                 status = workspace_status_payload()
                 self.assertEqual(status["snapshot"]["works"], 2)
                 self.assertEqual(status["collections"][0]["collection"], "default")
+                self.assertEqual(status["search_scopes"][0]["key"], "all")
+                self.assertEqual(status["search_scopes"][0]["label"], "All Collections")
+                self.assertEqual(status["search_scopes"][1]["collection_name"], "default")
 
                 graph = show_graph_payload(
                     work_id=work_id,
@@ -66,6 +69,8 @@ class ApiLayerTests(unittest.TestCase):
                     response = client.get("/")
                     self.assertEqual(response.status_code, 200)
                     self.assertIn("hep-rag Console", response.text)
+                    self.assertIn("Search Scope", response.text)
+                    self.assertIn("All Collections", response.text)
                     self.assertIn("/workspace/status", response.text)
                     self.assertIn("/auth/status", response.text)
                     health = client.get("/health").json()

@@ -24,6 +24,7 @@ from hep_rag_v2.fulltext import import_mineru_source, materialize_mineru_documen
 from hep_rag_v2.graph import graph_neighbors, rebuild_graph_edges
 from hep_rag_v2.metadata import upsert_collection, upsert_work_from_hit
 from hep_rag_v2.query import build_match_queries, rewrite_query_for_embedding
+from hep_rag_v2.rag import retrieve as rag_retrieve
 from hep_rag_v2.search import rebuild_search_indices
 from hep_rag_v2.vector import (
     HASH_IDF_VECTOR_MODEL,
@@ -387,6 +388,64 @@ class TestVectorSearch(unittest.TestCase):
                     self.assertGreaterEqual(len(rows), 2)
                     self.assertEqual(rows[0]["canonical_id"], "901")
                     self.assertIn(rows[1]["canonical_id"], {"902", "904"})
+
+    def test_rag_retrieve_defaults_to_all_collections_and_accepts_collection_scope_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            with _patch_workspace(tmp):
+                db.ensure_db()
+                with db.connect() as conn:
+                    collection_id = upsert_collection(conn, {"name": "cms_ml"})
+                    for control_number, title, abstract, collabs in [
+                        (
+                            1001,
+                            "Run 3 performance and advances in heavy-flavor jet tagging in CMS",
+                            "Recent CMS progress in jet tagging with modern machine learning methods.",
+                            [{"value": "CMS"}],
+                        ),
+                        (
+                            1002,
+                            "ATLAS jet tagging performance with deep learning techniques",
+                            "ATLAS studies jet tagging with deep neural networks.",
+                            [{"value": "ATLAS"}],
+                        ),
+                    ]:
+                        hit = {
+                            "metadata": {
+                                "control_number": control_number,
+                                "titles": [{"title": title}],
+                                "abstracts": [{"value": abstract}],
+                                "collaborations": collabs,
+                            }
+                        }
+                        upsert_work_from_hit(conn, collection_id=collection_id, hit=hit)
+
+                    rebuild_search_indices(conn, target="works")
+                    rebuild_vector_indices(conn, target="works", model=HASH_IDF_VECTOR_MODEL)
+                    conn.commit()
+
+                config = {
+                    "retrieval": {"target": "works", "limit": 3},
+                    "embedding": {"model": HASH_IDF_VECTOR_MODEL},
+                }
+                payload = rag_retrieve(
+                    config,
+                    query="CMS jet tagging latest progress",
+                )
+                self.assertEqual(payload["collection"], "all")
+                self.assertEqual(payload["search_scope"]["kind"], "all")
+                self.assertGreaterEqual(len(payload["works"]), 1)
+                self.assertEqual(payload["works"][0]["canonical_id"], "1001")
+
+                scoped_payload = rag_retrieve(
+                    config,
+                    query="CMS jet tagging latest progress",
+                    collection_name="collection:cms_ml",
+                )
+                self.assertEqual(scoped_payload["collection"], "cms_ml")
+                self.assertEqual(scoped_payload["search_scope"]["collection_name"], "cms_ml")
+                self.assertGreaterEqual(len(scoped_payload["works"]), 1)
+                self.assertEqual(scoped_payload["works"][0]["canonical_id"], "1001")
 
     def test_cli_search_hybrid_auto_routes_broad_queries_to_work_level(self) -> None:
         with tempfile.TemporaryDirectory() as td:
