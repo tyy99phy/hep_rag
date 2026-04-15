@@ -9,10 +9,10 @@
 
 ## 当前波次：structure 先于 downstream lanes
 
-当前仓库不再把 `results` / `methods` / `transfer` 视为彼此独立的自由抽取器，而是把 `structure` 当作上游判断来源。推进这一波次时，至少要保证：
+当前仓库不再把 `results` / `methods` / `transfer` 视为彼此独立的自由抽取器，而是把 `structure` 当作默认上游判断来源。推进这一波次时，至少要保证：
 
 - ingest / reparse 默认路径先跑 `build_work_structures()`，再跑 `results` / `methods` / `transfer`
-- 顶层状态只使用合同允许值：`ready` / `partial` / `needs_review` / `failed`
+- 顶层状态只使用合同允许值：`ready` / `partial` / `needs_review` / `failed`（不再保留 `review_relaxed` / `needs_attention` 兼容语义）
 - 非综述文章缺少必需签名时，不允许静默跳过；必须留下合同级可见状态
 - README、测试文档和实现文档统一把仓库描述为 reasoning substrate，而不是仅仅“若干独立 producer 的集合”
 
@@ -252,4 +252,4 @@ hep-rag benchmark-manifest --model-label weak-model
 - 全量基准金标数据
 - 已冻结但全面商品化的 reasoning/object production pipeline
 
-对象合同已经在 [`docs/hep-core-object-contracts.md`](./hep-core-object-contracts.md) 冻结；本波次的重点不是再发明新的状态语义，而是让 `structure -> results/methods/transfer` 的上游关系在实现、测试和文档里都真正成立。
+对象合同已经在 [`docs/hep-core-object-contracts.md`](./hep-core-object-contracts.md) 冻结；本波次的重点不是再发明新的状态语义，而是让 `structure -> results/methods/transfer` 的默认上游关系在实现、测试和文档里都真正成立。

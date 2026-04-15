@@ -10,7 +10,7 @@
 - `results` / `methods` / `transfer` 是消费结构化判断的下游生产层
 - 对象合同（尤其状态语义）是这条链路的公共边界
 
-因此，本波次的目标不是“给三个 producer 各自补一点启发式”，而是把 `structure` 变成真正的 truth source。
+因此，本波次的目标不是“给三个 producer 各自补一点启发式”，而是把 `structure` 变成默认 truth source：只要结构化输出存在，下游就应优先消费它。
 
 ## 2. 必须保持的硬约束
 
@@ -33,7 +33,7 @@
 - `needs_review`
 - `failed`
 
-不允许再产生或传播非合同状态，例如：
+不允许再产生或传播非合同状态。历史兼容值只允许作为“禁止再用”的示例出现，例如：
 
 - `review_relaxed`
 - `needs_attention`
@@ -90,7 +90,7 @@ README、测试文档与实现文档都必须反映同一件事：
 1. article + required signatures 完整 → `ready`
 2. article + 缺少必需签名 → `needs_review`（或有意选择的合同级失败路径）
 3. review + 缺少必需签名 → 允许宽松，但状态仍为合同允许值
-4. 不出现 `review_relaxed` / `needs_attention` 之类的顶层漂移
+4. 运行时与文档叙事中都不再把 `review_relaxed` / `needs_attention` 当作活动顶层状态
 
 优先关注：
 
@@ -124,7 +124,7 @@ pytest -q tests/test_retrieval_adapter.py tests/test_service_api.py tests/test_b
 
 文档 lane 不负责替别的 lane 写实现细节，但必须做到：
 
-- README 用简洁语言说明 structure-first substrate 当前阶段
+- README 用简洁语言说明 structure-first substrate 当前阶段，并明确 legacy status 仅保留为禁用示例
 - `docs/testing.md` 给出用户可执行的路径，并明确当前波次的验证命令
 - 本文档固定结构优先、合同状态、上下游职责与验收口径
 

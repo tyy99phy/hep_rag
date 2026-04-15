@@ -11,7 +11,7 @@
 
 ## 当前仓库姿态
 
-当前仓库不只是“检索 + 问答”工具链，也在收敛为一个 HEP reasoning substrate：`structure` 先产出上游结构判断，再由 `results` / `methods` / `transfer` 消费同一套合同级状态与语义。当前允许的顶层状态以 [`docs/hep-core-object-contracts.md`](docs/hep-core-object-contracts.md) 为准：`ready` / `partial` / `needs_review` / `failed`。
+当前仓库不只是“检索 + 问答”工具链，也在收敛为一个 HEP reasoning substrate：只要存在 `structure` 输出，它就是 `results` / `methods` / `transfer` 默认消费的语义来源。当前允许的顶层状态以 [`docs/hep-core-object-contracts.md`](docs/hep-core-object-contracts.md) 为准：`ready` / `partial` / `needs_review` / `failed`；历史兼容值 `review_relaxed` / `needs_attention` 已退出运行时语义。
 
 ## 架构
 
