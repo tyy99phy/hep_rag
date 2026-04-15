@@ -5,6 +5,8 @@ import re
 import sqlite3
 from typing import Any
 
+from hep_rag_v2.object_contracts import ALLOWED_STATUSES
+
 RESULT_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ("measurement", "measurement", re.compile(r"\b(measure(?:ment|d|s)?|determination|branching fraction|branching ratio|cross section)\b", re.IGNORECASE)),
     ("upper_limit", "upper limit", re.compile(r"\b(upper limit|95%\s*cl|limit at 95% cl|set limits?)\b", re.IGNORECASE)),
@@ -211,21 +213,18 @@ def _load_structure_result_snapshot(conn: sqlite3.Connection, *, work_id: int) -
         for item in payload
         if isinstance(item, dict)
     ]
-    builder = str(row["builder"] or "").strip()
     return {
         "status": _normalize_structure_status(row["status"]),
         "values": values,
-        "use_structure_payload": bool(values) and builder and builder != "heuristic-v1",
+        "use_structure_payload": bool(values),
     }
 
 
 def _normalize_structure_status(value: Any) -> str:
     status = str(value or "").strip()
-    if status == "review_relaxed":
-        return "ready"
-    if status == "needs_attention":
-        return "needs_review"
-    return status or "failed"
+    if not status:
+        return "failed"
+    return status if status in ALLOWED_STATUSES else "failed"
 
 
 def _resolve_content_source(conn: sqlite3.Connection, *, work_id: int, use_structure_snapshot: bool) -> str:

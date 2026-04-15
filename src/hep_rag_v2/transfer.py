@@ -5,6 +5,7 @@ import sqlite3
 from typing import Any
 
 from hep_rag_v2.methods import ensure_method_schema
+from hep_rag_v2.object_contracts import ALLOWED_STATUSES
 from hep_rag_v2.results import ensure_result_schema
 
 OBJECT_CONTRACT_VERSION = "v1"
@@ -133,11 +134,9 @@ def _load_structure_status(conn: sqlite3.Connection, *, work_id: int) -> str | N
     if row is None:
         return None
     status = str(row["status"] or "").strip()
-    if status == "review_relaxed":
-        return "ready"
-    if status == "needs_attention":
-        return "needs_review"
-    return status or "failed"
+    if not status:
+        return "failed"
+    return status if status in ALLOWED_STATUSES else "failed"
 
 
 def _candidate_rows(conn: sqlite3.Connection, *, work_id: int, collection: str | None) -> list[dict[str, Any]]:

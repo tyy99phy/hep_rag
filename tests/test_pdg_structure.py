@@ -1,4 +1,5 @@
 from __future__ import annotations
+# ruff: noqa: E402
 
 import contextlib
 import io
@@ -15,9 +16,12 @@ if str(SRC) not in sys.path:
 
 from hep_rag_v2 import cli, db, paths
 from hep_rag_v2.config import default_config, resolve_embedding_profile
+from hep_rag_v2.methods import build_method_objects
 from hep_rag_v2.metadata import upsert_collection, upsert_work_from_hit
+from hep_rag_v2.results import build_result_objects
 from hep_rag_v2.pdg import import_pdg_source
 from hep_rag_v2.structure import build_work_structures
+from hep_rag_v2.transfer import build_transfer_candidates
 
 
 @contextlib.contextmanager
@@ -136,6 +140,51 @@ class StructurePipelineTests(unittest.TestCase):
                 self.assertEqual(int(row["is_review"]), 1)
                 self.assertEqual(row["status"], "partial")
                 self.assertIsNone(row["anomaly_code"])
+
+    def test_downstream_lanes_treat_legacy_structure_status_as_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            with _patch_workspace(tmp):
+                db.ensure_db()
+                with db.connect() as conn:
+                    collection_id = upsert_collection(conn, {"name": "default", "label": "Default"})
+                    work_id = self._insert_hit(
+                        conn,
+                        collection_id=collection_id,
+                        control_number=104,
+                        title="Legacy status seed",
+                        abstract="We measure the branching fraction with a profile likelihood fit.",
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO work_capsules (
+                          work_id, collection_id, profile, builder, is_review, status, capsule_text,
+                          result_signature_json, method_signature_json, anomaly_code, anomaly_detail
+                        ) VALUES (?, ?, 'default', 'heuristic-v1', 0, 'needs_attention', ?, ?, ?, NULL, NULL)
+                        """,
+                        (
+                            work_id,
+                            collection_id,
+                            # legacy-compat regression seed: downstream lanes must collapse obsolete
+                            # status values to failed instead of remapping them into active states
+                            "legacy capsule",
+                            json.dumps([{"kind": "measurement", "label": "measurement", "evidence": "legacy"}]),
+                            json.dumps([{"kind": "statistical_fit", "label": "profile likelihood", "evidence": "legacy"}]),
+                        ),
+                    )
+
+                    result_summary = build_result_objects(conn, work_ids=[work_id], collection="default")
+                    method_summary = build_method_objects(conn, work_ids=[work_id], collection="default")
+                    transfer_summary = build_transfer_candidates(conn, work_ids=[work_id], collection="default")
+
+                    result_row = conn.execute("SELECT status FROM result_objects WHERE work_id = ?", (work_id,)).fetchone()
+                    method_row = conn.execute("SELECT status FROM method_objects WHERE work_id = ?", (work_id,)).fetchone()
+
+                self.assertEqual(result_summary["failed"], 1)
+                self.assertEqual(method_summary["failed"], 1)
+                self.assertEqual(transfer_summary["failed"], 1)
+                self.assertEqual(result_row["status"], "failed")
+                self.assertEqual(method_row["status"], "failed")
 
 
 class PdgImportTests(unittest.TestCase):

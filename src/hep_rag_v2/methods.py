@@ -5,6 +5,8 @@ import re
 import sqlite3
 from typing import Any
 
+from hep_rag_v2.object_contracts import ALLOWED_STATUSES
+
 METHOD_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ("statistical_fit", "profile likelihood", re.compile(r"\b(profile likelihood|likelihood fit|template fit|maximum likelihood)\b", re.IGNORECASE)),
     ("multivariate", "multivariate", re.compile(r"\b(boosted decision tree|\bbdt\b|neural network|deep neural network|multivariate)\b", re.IGNORECASE)),
@@ -202,21 +204,18 @@ def _load_structure_method_snapshot(conn: sqlite3.Connection, *, work_id: int) -
         for item in payload
         if isinstance(item, dict)
     ]
-    builder = str(row["builder"] or "").strip()
     return {
         "status": _normalize_structure_status(row["status"]),
         "signatures": signatures,
-        "use_structure_payload": bool(signatures) and builder and builder != "heuristic-v1",
+        "use_structure_payload": bool(signatures),
     }
 
 
 def _normalize_structure_status(value: Any) -> str:
     status = str(value or "").strip()
-    if status == "review_relaxed":
-        return "ready"
-    if status == "needs_attention":
-        return "needs_review"
-    return status or "failed"
+    if not status:
+        return "failed"
+    return status if status in ALLOWED_STATUSES else "failed"
 
 
 def _resolve_content_source(conn: sqlite3.Connection, *, work_id: int, use_structure_snapshot: bool) -> str:
