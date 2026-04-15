@@ -676,6 +676,7 @@
               <option value="">auto</option>
               <option value="works">works</option>
               <option value="chunks">chunks</option>
+              <option value="community">community</option>
               <option value="ontology">ontology</option>
             </select>
           </div>
@@ -840,6 +841,7 @@
         badge(`Documents ${snapshot.documents ?? 0}`),
         badge(`Chunks ${snapshot.chunks ?? 0}`),
         badge(`Collections ${snapshot.collections ?? 0}`),
+        badge(`Communities ${snapshot.community_summaries ?? 0}`),
         badge(`Ontology ${snapshot.ontology_summaries ?? 0}`),
         `</div>`,
         `<div class="result-kv">`,
@@ -847,6 +849,9 @@
         resultRow("Venues", snapshot.venues ?? 0),
         resultRow("Topics", snapshot.topics ?? 0),
         resultRow("Citations", snapshot.citations ?? 0),
+        resultRow("Community summaries", snapshot.community_summaries ?? 0),
+        resultRow("Global community summaries", snapshot.global_community_summaries ?? 0),
+        resultRow("Collection community summaries", snapshot.collection_community_summaries ?? 0),
         resultRow("Ontology collaboration summaries", snapshot.ontology_collaboration_summaries ?? 0),
         resultRow("Ontology topic summaries", snapshot.ontology_topic_summaries ?? 0),
         resultRow("Ontology result summaries", snapshot.ontology_result_summaries ?? 0),
@@ -899,6 +904,7 @@
     }
 
     function renderRetrieveResult(data) {
+      const communities = Array.isArray(data.community_summaries) ? data.community_summaries : [];
       const ontology = Array.isArray(data.ontology_summaries) ? data.ontology_summaries : [];
       const works = Array.isArray(data.works) ? data.works : [];
       const chunks = Array.isArray(data.evidence_chunks) ? data.evidence_chunks : [];
@@ -912,11 +918,18 @@
         badge(`Scope ${escapeHtml(scope.label)}`),
         badge(`Requested ${escapeHtml(data.requested_target || "auto")}`),
         badge(`Routed ${escapeHtml(routedTo)}`),
+        badge(`Communities ${communities.length}`),
         badge(`Ontology ${ontology.length}`),
         badge(`Works ${works.length}`),
         badge(`Chunks ${chunks.length}`),
         `</div>`,
-        `<div class="result-note">Retrieve can now expose ontology summaries above works/chunks. Use <code>ontology</code> for summary-first retrieval, or keep <code>auto</code> / <code>works</code> for mixed evidence.</div>`,
+        `<div class="result-note">Retrieve can now expose community summaries and ontology summaries above works/chunks. Use <code>community</code> or <code>ontology</code> for summary-first retrieval, or keep <code>auto</code> / <code>works</code> for mixed evidence.</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Community Summaries</h3>`,
+        communities.length
+          ? `<div class="result-list">${communities.map(renderCommunitySummaryCard).join("")}</div>`
+          : `<div class="result-note">No community summaries were attached for this query.</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Ontology Summaries</h3>`,
@@ -940,6 +953,7 @@
     }
 
     function renderAskResult(data) {
+      const communities = Array.isArray(data.evidence?.community_summaries) ? data.evidence.community_summaries : [];
       const ontology = Array.isArray(data.evidence?.ontology_summaries) ? data.evidence.ontology_summaries : [];
       const works = Array.isArray(data.evidence?.works) ? data.evidence.works : [];
       const chunks = Array.isArray(data.evidence?.chunks) ? data.evidence.chunks : [];
@@ -951,19 +965,26 @@
         badge(`Scope ${escapeHtml(scope.label)}`),
         badge(`Mode ${escapeHtml(data.mode || "answer")}`),
         badge(`Model ${escapeHtml(data.llm_model || data.llm_backend || "unknown")}`),
+        badge(`Communities ${communities.length}`),
         badge(`Ontology ${ontology.length}`),
         badge(`Works ${works.length}`),
         badge(`Chunks ${chunks.length}`),
         `</div>`,
-        `<div class="result-subtitle">Display mode now renders the answer as Markdown. Click citations like [O1], [W1], or [C2] to jump to the matching evidence card below.</div>`,
+        `<div class="result-subtitle">Display mode now renders the answer as Markdown. Click citations like [G1], [O1], [W1], or [C2] to jump to the matching evidence card below.</div>`,
         `<div class="result-answer md-content">${renderMarkdown(data.answer || "")}</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Evidence Snapshot</h3>`,
         `<div class="evidence-overview">`,
         `<div class="result-note">Paper-level evidence gives the document identity and coarse context. Chunk-level evidence carries the fine-grained passage text that should support the answer.</div>`,
-        `<div class="result-note">Ontology summaries give you the high-level substrate. Answer citations are clickable and will scroll to the matching ontology, work, or chunk evidence.</div>`,
+        `<div class="result-note">Community summaries capture graph-level clusters. Ontology summaries capture typed substrate. Answer citations are clickable and will scroll to the matching community, ontology, work, or chunk evidence.</div>`,
         `</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Evidence Community Summaries</h3>`,
+        communities.length
+          ? `<div class="result-list">${communities.map((item, index) => renderCommunitySummaryCard(item, { emphasizeEvidence: true, refType: "G", refIndex: index + 1 })).join("")}</div>`
+          : `<div class="result-note">No community summaries attached.</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Evidence Ontology Summaries</h3>`,
@@ -1115,6 +1136,39 @@
             ${badge(`Works ${item.work_count ?? 0}`)}
             ${badge(`Signals ${item.signal_count ?? 0}`)}
           </div>
+          <div class="result-card-copy">${escapeHtml(summaryText)}</div>
+          ${representativeWorks.length ? `
+            <details class="result-details">
+              <summary>Representative works (${representativeWorks.length})</summary>
+              <div class="related-list">
+                ${representativeWorks.map(renderOntologyRepresentativeWork).join("")}
+              </div>
+            </details>
+          ` : ``}
+        </div>
+      `;
+    }
+
+    function renderCommunitySummaryCard(item, options = {}) {
+      const summaryText = truncateText(item.summary_text || item.summary || item.text || "", options.emphasizeEvidence ? 360 : 260) || "No community summary text available.";
+      const representativeWorks = Array.isArray(item.representative_works) ? item.representative_works : [];
+      const signalMix = Array.isArray(item.metadata?.signal_mix) ? item.metadata.signal_mix : [];
+      const evidenceRef = options.refType && options.refIndex ? `${options.refType}${options.refIndex}` : "";
+      const evidenceAttrs = evidenceRef
+        ? ` id="${escapeHtml(evidenceRefId(evidenceRef))}" class="result-card evidence-target"`
+        : ` class="result-card"`;
+      return `
+        <div${evidenceAttrs}>
+          <div class="result-card-title">${escapeHtml(item.label || item.title || "Community summary")}</div>
+          <div class="result-card-subtitle">${escapeHtml(item.algorithm || "community_summary")}</div>
+          <div class="result-card-meta">
+            ${evidenceRef ? badge(`Ref ${escapeHtml(evidenceRef)}`) : ``}
+            ${badge(`Rank ${item.rank ?? "-"}`)}
+            ${badge(`Score ${formatScore(item.hybrid_score)}`)}
+            ${badge(`Works ${item.work_count ?? 0}`)}
+            ${badge(`Edges ${item.edge_count ?? 0}`)}
+          </div>
+          ${signalMix.length ? `<div class="result-card-subtitle">${escapeHtml(signalMix.slice(0, 4).join(" | "))}</div>` : ``}
           <div class="result-card-copy">${escapeHtml(summaryText)}</div>
           ${representativeWorks.length ? `
             <details class="result-details">
@@ -1414,7 +1468,7 @@
 
       let html = escapeHtml(tokenized);
       html = html.replace(
-        /\[([WCO]\d+)\]/g,
+        /\[([WGCO]\d+)\]/g,
         (_, ref) => `<a href="#${escapeHtml(evidenceRefId(ref))}" class="md-ref-link" data-evidence-ref="${escapeHtml(ref)}"><span class="md-ref">[${escapeHtml(ref)}]</span></a>`
       );
       html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");

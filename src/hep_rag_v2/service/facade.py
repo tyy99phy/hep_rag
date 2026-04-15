@@ -74,6 +74,7 @@ class HepRagServiceFacade:
                 "requested_target": target,
                 "routing": {"target": target or "answer", "graph_expand": 0, "reasons": ["answer_evidence"]},
                 "model": model,
+                "community_summaries": list(evidence.get("community_summaries") or []),
                 "ontology_summaries": list(evidence.get("ontology_summaries") or []),
                 "works": list(evidence.get("works") or []),
                 "evidence_chunks": list(evidence.get("chunks") or []),

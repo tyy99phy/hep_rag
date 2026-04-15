@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from hep_rag_v2.community import search_community_summaries
 from hep_rag_v2.config import resolve_embedding_settings
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.metadata import expand_work_ids_with_family, family_payload_map
@@ -68,6 +69,7 @@ def retrieve(
     configure_embedding_runtime(model=embedding_model, settings=embedding_settings)
     limit_value = max(1, int(limit or retrieval_cfg.get("limit") or 8))
     chunk_limit = max(limit_value, int(retrieval_cfg.get("chunk_limit") or max(limit_value, 12)))
+    community_limit = max(1, int(retrieval_cfg.get("community_limit") or min(limit_value, 4)))
     ontology_limit = max(1, int(retrieval_cfg.get("ontology_limit") or min(limit_value, 4)))
     retrieval_workers = _resolve_parallelism(
         requested=max_parallelism,
@@ -88,8 +90,35 @@ def retrieve(
         graph_expand = routing.get("graph_expand") or 0
 
     with connect() as conn:
+        community_summaries: list[dict[str, Any]] = []
         ontology_summaries: list[dict[str, Any]] = []
-        if actual_target == "ontology":
+        if actual_target == "community":
+            _emit_progress(progress, "searching community summaries...")
+            community_summaries = search_community_summaries(
+                conn,
+                query=query,
+                collection=collection,
+                limit=community_limit,
+            )
+            representative_work_ids = _summary_representative_work_ids(
+                community_summaries,
+                limit=max(limit_value * 2, community_limit * 4),
+            )
+            works = _hydrate_works_by_ids(conn, work_ids=representative_work_ids, limit=limit_value)
+            if works:
+                _emit_progress(progress, "collecting supporting chunks from community summaries...")
+                chunks = _supporting_chunks(
+                    conn,
+                    query=query,
+                    collection=collection,
+                    model=embedding_model,
+                    work_ids=[int(row["work_id"]) for row in works],
+                    limit=chunk_limit,
+                    max_parallelism=retrieval_workers,
+                )
+            else:
+                chunks = []
+        elif actual_target == "ontology":
             _emit_progress(progress, "searching ontology summaries...")
             ontology_summaries = search_ontology_summaries(
                 conn,
@@ -97,7 +126,7 @@ def retrieve(
                 collection=collection,
                 limit=ontology_limit,
             )
-            representative_work_ids = _ontology_representative_work_ids(
+            representative_work_ids = _summary_representative_work_ids(
                 ontology_summaries,
                 limit=max(limit_value * 2, ontology_limit * 4),
             )
@@ -137,6 +166,14 @@ def retrieve(
                 limit=chunk_limit,
                 max_parallelism=retrieval_workers,
             )
+            if _should_attach_community_summaries(query=query, actual_target=actual_target):
+                _emit_progress(progress, "attaching community summaries...")
+                community_summaries = search_community_summaries(
+                    conn,
+                    query=query,
+                    collection=collection,
+                    limit=community_limit,
+                )
             if _should_attach_ontology_summaries(query=query, actual_target=actual_target):
                 _emit_progress(progress, "attaching ontology summaries...")
                 ontology_summaries = search_ontology_summaries(
@@ -170,6 +207,7 @@ def retrieve(
             "reasons": list(routing.get("reasons") or []),
         },
         "model": embedding_model,
+        "community_summaries": community_summaries,
         "ontology_summaries": ontology_summaries,
         "works": works,
         "evidence_chunks": chunks,
@@ -206,6 +244,8 @@ def ask(
     evidence_limit = max(1, int((config.get("retrieval") or {}).get("answer_evidence_limit") or 6))
     evidence_chunks = retrieval["evidence_chunks"][:evidence_limit]
     evidence_works = retrieval["works"][: max(3, min(len(retrieval["works"]), evidence_limit))]
+    community_summaries = list(retrieval.get("community_summaries") or [])
+    evidence_community = community_summaries[: max(2, min(len(community_summaries), 4))]
     ontology_summaries = list(retrieval.get("ontology_summaries") or [])
     evidence_ontology = ontology_summaries[: max(2, min(len(ontology_summaries), 4))]
 
@@ -215,6 +255,7 @@ def ask(
         mode=mode,
         works=evidence_works,
         chunks=evidence_chunks,
+        community_summaries=evidence_community,
         ontology_summaries=evidence_ontology,
     )
     _emit_progress(progress, "generating answer with LLM...")
@@ -237,6 +278,7 @@ def ask(
         "evidence": {
             "works": evidence_works,
             "chunks": evidence_chunks,
+            "community_summaries": evidence_community,
             "ontology_summaries": evidence_ontology,
         },
     }
@@ -386,6 +428,7 @@ def _build_answer_messages(
     mode: str,
     works: list[dict[str, Any]],
     chunks: list[dict[str, Any]],
+    community_summaries: list[dict[str, Any]],
     ontology_summaries: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     mode_text = {
@@ -421,6 +464,26 @@ def _build_answer_messages(
             f"section={item.get('section_hint')}\n{snippet}"
         )
 
+    community_lines = []
+    for idx, item in enumerate(community_summaries, start=1):
+        summary_text = " ".join(str(item.get("summary_text") or item.get("summary") or "").split())
+        if len(summary_text) > 500:
+            summary_text = summary_text[:500].rstrip() + " ..."
+        representative = list(item.get("representative_works") or [])[:3]
+        representative_text = "; ".join(
+            f"{work.get('title')} ({work.get('year')})"
+            for work in representative
+            if isinstance(work, dict) and work.get("title")
+        )
+        header = (
+            f"[G{idx}] {item.get('label') or item.get('title')} "
+            f"| works={item.get('work_count') or 0} "
+            f"| edges={item.get('edge_count') or 0}"
+        )
+        if representative_text:
+            header += f"\nrepresentative works: {representative_text}"
+        community_lines.append(f"{header}\n{summary_text}")
+
     ontology_lines = []
     for idx, item in enumerate(ontology_summaries, start=1):
         summary_text = " ".join(str(item.get("summary_text") or item.get("summary") or "").split())
@@ -445,6 +508,9 @@ def _build_answer_messages(
     user_prompt = (
         f"用户问题:\n{query}\n\n"
         f"写作模式:\n{mode_text}\n\n"
+        "可用 community summaries:\n"
+        + ("\n\n".join(community_lines) if community_lines else "(none)")
+        + "\n\n"
         "可用 ontology summaries:\n"
         + ("\n\n".join(ontology_lines) if ontology_lines else "(none)")
         + "\n\n"
@@ -455,7 +521,7 @@ def _build_answer_messages(
         + "\n\n要求:\n"
         "1. 只能基于上面证据作答，不要补造未给出的论文结论。\n"
         "2. 如果证据不足，要明确说不足在哪里。\n"
-        "3. 回答时尽量引用 [O1] / [W1] / [C2] 这种编号，便于回溯。\n"
+        "3. 回答时尽量引用 [G1] / [O1] / [W1] / [C2] 这种编号，便于回溯。\n"
         "4. 使用与用户问题相同的语言。"
     )
     return [
@@ -478,7 +544,15 @@ def _should_attach_ontology_summaries(*, query: str, actual_target: str) -> bool
     return is_relation_query(query) or is_result_query(query)
 
 
-def _ontology_representative_work_ids(
+def _should_attach_community_summaries(*, query: str, actual_target: str) -> bool:
+    if actual_target == "community":
+        return True
+    if actual_target != "works":
+        return False
+    return is_relation_query(query) or is_result_query(query)
+
+
+def _summary_representative_work_ids(
     summaries: list[dict[str, Any]],
     *,
     limit: int,

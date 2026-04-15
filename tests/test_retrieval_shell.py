@@ -21,6 +21,18 @@ class RetrievalShellTests(unittest.TestCase):
         self.payload = {
             "query": "CMS VBS SSWW",
             "collection": "default",
+            "community_summaries": [
+                {
+                    "summary_id": "community_summary:all:community:ssww_cluster",
+                    "algorithm": "weighted_components_v1",
+                    "label": "CMS / same sign ww community",
+                    "summary_text": "Community around CMS same-sign WW measurements and related VBS papers.",
+                    "work_count": 3,
+                    "edge_count": 2,
+                    "rank": 1,
+                    "hybrid_score": 1.41,
+                }
+            ],
             "ontology_summaries": [
                 {
                     "summary_id": "ontology_summary:all:topic:same_sign_ww",
@@ -65,22 +77,29 @@ class RetrievalShellTests(unittest.TestCase):
         shell = build_retrieval_shell(self.payload)
 
         self.assertEqual(shell["query"], "CMS VBS SSWW")
-        self.assertEqual([item["source_type"] for item in shell["results"]], ["ontology_summary", "chunk", "work"])
-        self.assertEqual(shell["results"][0]["title"], "same sign ww")
-        self.assertEqual(shell["results"][0]["text"], self.payload["ontology_summaries"][0]["summary_text"])
-        self.assertEqual(shell["results"][1]["text"], self.payload["evidence_chunks"][0]["clean_text"])
-        self.assertEqual(shell["results"][2]["text"], self.payload["works"][0]["abstract"])
+        self.assertEqual([item["source_type"] for item in shell["results"]], ["community_summary", "ontology_summary", "chunk", "work"])
+        self.assertEqual(shell["results"][0]["title"], "CMS / same sign ww community")
+        self.assertEqual(shell["results"][0]["text"], self.payload["community_summaries"][0]["summary_text"])
+        self.assertEqual(shell["results"][1]["title"], "same sign ww")
+        self.assertEqual(shell["results"][1]["text"], self.payload["ontology_summaries"][0]["summary_text"])
+        self.assertEqual(shell["results"][2]["text"], self.payload["evidence_chunks"][0]["clean_text"])
+        self.assertEqual(shell["results"][3]["text"], self.payload["works"][0]["abstract"])
         self.assertEqual(
             [item["citation"] for item in shell["evidence_registry"]["items"]],
-            ["[ontology_summary:all:topic:same_sign_ww]", "[chunk:101]", "[work:11]"],
+            [
+                "[community_summary:all:community:ssww_cluster]",
+                "[ontology_summary:all:topic:same_sign_ww]",
+                "[chunk:101]",
+                "[work:11]",
+            ],
         )
 
     def test_evidence_registry_dedupes_repeated_results(self) -> None:
         shell = build_retrieval_shell(self.payload)
         registry = EvidenceRegistry()
 
-        first = registry.register(shell["results"][1])
-        second = registry.register(shell["results"][1])
+        first = registry.register(shell["results"][2])
+        second = registry.register(shell["results"][2])
 
         self.assertEqual(first["citation"], "[chunk:101]")
         self.assertEqual(second["citation"], "[chunk:101]")
@@ -91,7 +110,7 @@ class RetrievalShellTests(unittest.TestCase):
             facade = HepRagServiceFacade(config={"retrieval": {}})
             payload = facade.retrieve(query="CMS VBS SSWW", limit=4, target="works", collection_name="default")
 
-        self.assertEqual([item["source_type"] for item in payload["results"]], ["ontology_summary", "chunk", "work"])
+        self.assertEqual([item["source_type"] for item in payload["results"]], ["community_summary", "ontology_summary", "chunk", "work"])
         retrieve_mock.assert_called_once_with(
             {"retrieval": {}},
             query="CMS VBS SSWW",
@@ -103,13 +122,14 @@ class RetrievalShellTests(unittest.TestCase):
             progress=None,
         )
 
-    def test_service_facade_ask_registers_ontology_summary_evidence(self) -> None:
+    def test_service_facade_ask_registers_summary_evidence(self) -> None:
         ask_payload = {
             "query": "CMS VBS SSWW",
             "mode": "answer",
             "collection": "default",
-            "answer": "See [O1] and [W1].",
+            "answer": "See [G1], [O1], and [W1].",
             "evidence": {
+                "community_summaries": list(self.payload["community_summaries"]),
                 "ontology_summaries": list(self.payload["ontology_summaries"]),
                 "works": list(self.payload["works"]),
                 "chunks": list(self.payload["evidence_chunks"]),
@@ -120,8 +140,9 @@ class RetrievalShellTests(unittest.TestCase):
             payload = facade.ask(query="CMS VBS SSWW")
 
         evidence_registry = payload["evidence_registry"]
-        self.assertEqual(evidence_registry[0]["object_type"], "ontology_summary")
-        self.assertEqual(evidence_registry[0]["citation"], "[ontology_summary:all:topic:same_sign_ww]")
+        self.assertEqual(evidence_registry[0]["object_type"], "community_summary")
+        self.assertEqual(evidence_registry[0]["citation"], "[community_summary:all:community:ssww_cluster]")
+        self.assertEqual(evidence_registry[1]["object_type"], "ontology_summary")
 
     def test_default_tool_registry_exposes_retrieve_and_answer(self) -> None:
         facade = mock.Mock()

@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
+from hep_rag_v2.community import rebuild_community_summaries
 from hep_rag_v2 import paths
 from hep_rag_v2.config import runtime_collection_config
 from hep_rag_v2.db import connect, ensure_db
@@ -131,7 +132,14 @@ def _sync_thinking_engine_extractions(
     work_ids: list[int],
 ) -> dict[str, Any]:
     if not work_ids:
-        return {"structure": None, "results": None, "methods": None, "transfer": None, "ontology": None}
+        return {
+            "structure": None,
+            "results": None,
+            "methods": None,
+            "transfer": None,
+            "ontology": None,
+            "community": None,
+        }
     summaries = {
         "structure": build_work_structures(conn, work_ids=work_ids, collection=collection_name),
         "results": build_result_objects(conn, work_ids=work_ids, collection=collection_name),
@@ -140,6 +148,10 @@ def _sync_thinking_engine_extractions(
         "ontology": {
             "collection": rebuild_ontology_summaries(conn, collection=collection_name),
             "all": rebuild_ontology_summaries(conn, collection=None),
+        },
+        "community": {
+            "collection": rebuild_community_summaries(conn, collection=collection_name),
+            "all": rebuild_community_summaries(conn, collection=None),
         },
     }
     clear_dirty_work_ids(conn, lane="structure", collection=collection_name, work_ids=work_ids)

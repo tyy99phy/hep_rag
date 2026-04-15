@@ -303,6 +303,7 @@ def _adapt_typed_collections(
     collection: str | None = None,
 ) -> tuple[TypedRetrievalResult, ...]:
     groups = (
+        ("community_summaries", "community_summary", "summary_id"),
         ("ontology_summaries", "ontology_summary", "summary_id"),
         ("result_objects", "result_object", "result_id"),
         ("method_objects", "method_object", "method_id"),

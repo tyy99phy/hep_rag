@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from hep_rag_v2.community import community_summary_counts
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.ontology import ontology_summary_counts
 from hep_rag_v2.search_scope import available_search_scopes
@@ -15,6 +16,7 @@ def workspace_status_payload() -> dict[str, Any]:
     with connect() as conn:
         snapshot = _snapshot(conn)
         by_collection = _collections_payload(conn)
+        snapshot.update(community_summary_counts(conn))
         snapshot.update(ontology_summary_counts(conn))
         snapshot.update(search_index_counts(conn))
         snapshot.update(vector_index_counts(conn))

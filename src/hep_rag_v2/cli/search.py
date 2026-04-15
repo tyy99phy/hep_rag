@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from hep_rag_v2 import paths
+from hep_rag_v2.community import rebuild_community_summaries
 from hep_rag_v2.config import apply_runtime_config, resolve_config_path, resolve_embedding_settings
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.graph import rebuild_graph_edges
@@ -247,6 +248,11 @@ def cmd_build_graph(args: argparse.Namespace) -> None:
                 similarity_min_score=args.min_score,
                 progress=emit_cli_status,
             )
+            emit_cli_status("rebuilding community summaries after graph build...")
+            summary["community"] = {
+                "collection": rebuild_community_summaries(conn, collection=args.collection),
+                "all": rebuild_community_summaries(conn, collection=None),
+            }
             conn.commit()
             emit_cli_status("graph build finished.")
     except (RuntimeError, ValueError) as exc:
@@ -327,6 +333,11 @@ def _sync_graph_impl(conn, args: argparse.Namespace) -> dict[str, Any]:
         similarity_min_score=args.min_score,
         progress=emit_cli_status,
     )
+    emit_cli_status("rebuilding community summaries after graph sync...")
+    summary["community"] = {
+        "collection": rebuild_community_summaries(conn, collection=args.collection),
+        "all": rebuild_community_summaries(conn, collection=None),
+    }
     emit_cli_status("graph sync finished.")
     return summary
 
