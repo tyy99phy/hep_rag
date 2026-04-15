@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import sqlite3
+import sys
+import threading
+import warnings
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -48,6 +54,10 @@ EMBEDDING_STOPWORDS = {
     "state",
     "states",
 }
+DEFAULT_SENTENCE_TRANSFORMER_BATCH_SIZE = 32
+_SENTENCE_TRANSFORMER_RUNTIME_LOCK = threading.Lock()
+_SENTENCE_TRANSFORMER_RUNTIME: dict[str, dict[str, Any]] = {}
+_MISSING = object()
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +92,38 @@ def _sentence_transformer_name(model: str) -> str:
     if prefix not in {"st", "sentence-transformers"} or not value.strip():
         raise ValueError(f"Unsupported sentence-transformers model spec: {model}")
     return value.strip()
+
+
+def configure_embedding_runtime(*, model: str, settings: dict[str, Any] | None = None) -> None:
+    if not _is_sentence_transformer_model(model):
+        return
+    runtime = _normalize_sentence_transformer_runtime(settings)
+    with _SENTENCE_TRANSFORMER_RUNTIME_LOCK:
+        _SENTENCE_TRANSFORMER_RUNTIME[str(model)] = runtime
+    _get_sentence_transformer.cache_clear()
+
+
+def _runtime_for_model(model: str) -> dict[str, Any]:
+    with _SENTENCE_TRANSFORMER_RUNTIME_LOCK:
+        settings = dict(_SENTENCE_TRANSFORMER_RUNTIME.get(str(model)) or {})
+    return _normalize_sentence_transformer_runtime(settings or None)
+
+
+def _normalize_sentence_transformer_runtime(settings: dict[str, Any] | None) -> dict[str, Any]:
+    settings = dict(settings or {})
+    runtime = dict(settings.get("runtime") or settings)
+    huggingface = dict(runtime.get("huggingface") or {})
+    return {
+        "device": str(runtime.get("device") or "auto").strip() or "auto",
+        "batch_size": max(1, int(runtime.get("batch_size") or DEFAULT_SENTENCE_TRANSFORMER_BATCH_SIZE)),
+        "allow_silent_fallback": bool(settings.get("allow_silent_fallback", runtime.get("allow_silent_fallback", False))),
+        "huggingface": {
+            "endpoint": str(huggingface.get("endpoint") or "").strip() or None,
+            "cache_dir": str(huggingface.get("cache_dir") or "").strip() or None,
+            "local_files_only": bool(huggingface.get("local_files_only", False)),
+            "token": str(huggingface.get("token") or "").strip() or None,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -202,24 +244,243 @@ def _embed_corpus_hash_with_idf(texts: list[str], *, dim: int) -> tuple[np.ndarr
 # Sentence-transformers wrappers
 # ---------------------------------------------------------------------------
 
-@lru_cache(maxsize=2)
-def _get_sentence_transformer(model_name: str) -> Any:
+@contextmanager
+def _temporary_huggingface_endpoint(endpoint: str | None):
+    endpoint = str(endpoint or "").strip().rstrip("/")
+    if not endpoint:
+        yield
+        return
+    keys = ("HF_ENDPOINT", "HUGGINGFACE_HUB_ENDPOINT")
+    previous = {key: os.environ.get(key) for key in keys}
+    try:
+        for key in keys:
+            os.environ[key] = endpoint
+        with _temporary_huggingface_hub_constants(endpoint):
+            yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+@contextmanager
+def _temporary_huggingface_hub_constants(endpoint: str):
+    constants_module = sys.modules.get("huggingface_hub.constants")
+    if constants_module is None:
+        yield
+        return
+
+    template = endpoint + "/{repo_id}/resolve/{revision}/{filename}"
+    previous = {
+        "ENDPOINT": getattr(constants_module, "ENDPOINT", _MISSING),
+        "HUGGINGFACE_CO_URL_TEMPLATE": getattr(constants_module, "HUGGINGFACE_CO_URL_TEMPLATE", _MISSING),
+    }
+    try:
+        setattr(constants_module, "ENDPOINT", endpoint)
+        setattr(constants_module, "HUGGINGFACE_CO_URL_TEMPLATE", template)
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is _MISSING:
+                try:
+                    delattr(constants_module, name)
+                except AttributeError:
+                    pass
+            else:
+                setattr(constants_module, name, value)
+
+
+def _huggingface_cache_repo_dir(model_name: str, cache_dir: str | None) -> Path | None:
+    root = str(cache_dir or os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE") or "").strip()
+    if not root:
+        return None
+    return Path(root).expanduser() / f"models--{model_name.replace('/', '--')}"
+
+
+def _cached_sentence_transformer_snapshot(model_name: str, cache_dir: str | None) -> Path | None:
+    repo_dir = _huggingface_cache_repo_dir(model_name, cache_dir)
+    if repo_dir is None:
+        return None
+    snapshots_dir = repo_dir / "snapshots"
+    if not snapshots_dir.is_dir():
+        return None
+
+    revisions: list[str] = []
+    for ref_name in ("main", "master"):
+        ref_path = repo_dir / "refs" / ref_name
+        if ref_path.is_file():
+            revision = ref_path.read_text(encoding="utf-8").strip()
+            if revision:
+                revisions.append(revision)
+    revisions.extend(
+        child.name
+        for child in sorted(
+            snapshots_dir.iterdir(),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+        if child.is_dir()
+    )
+
+    seen: set[str] = set()
+    for revision in revisions:
+        if revision in seen:
+            continue
+        seen.add(revision)
+        snapshot_dir = snapshots_dir / revision
+        if not snapshot_dir.is_dir():
+            continue
+        has_config = (snapshot_dir / "config.json").exists()
+        has_weights = any((snapshot_dir / name).exists() for name in ("model.safetensors", "pytorch_model.bin"))
+        has_tokenizer = any((snapshot_dir / name).exists() for name in ("tokenizer.json", "vocab.txt", "tokenizer_config.json"))
+        if has_config and has_weights and has_tokenizer:
+            return snapshot_dir
+    return None
+
+
+def _prepare_sentence_transformer_source(
+    *,
+    model: str,
+    endpoint: str | None,
+    cache_dir: str | None,
+    local_files_only: bool,
+    token: str | None,
+) -> tuple[str, bool]:
+    model_name = _sentence_transformer_name(model)
+    cached_snapshot = _cached_sentence_transformer_snapshot(model_name, cache_dir)
+    if cached_snapshot is not None:
+        return (str(cached_snapshot), True)
+    if local_files_only:
+        return (model_name, True)
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return (model_name, False)
+
+    with _temporary_huggingface_endpoint(endpoint):
+        snapshot_dir = snapshot_download(
+            repo_id=model_name,
+            cache_dir=cache_dir,
+            local_files_only=False,
+            token=token,
+        )
+    return (str(Path(snapshot_dir).expanduser()), True)
+
+
+def _resolve_sentence_transformer_device(*, model: str, runtime: dict[str, Any]) -> str | None:
+    requested = str(runtime.get("device") or "auto").strip() or "auto"
+    if requested in {"auto", ""}:
+        return None
+    if not requested.startswith("cuda"):
+        return requested
+
+    allow_fallback = bool(runtime.get("allow_silent_fallback", False))
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError(
+            "torch is required for sentence-transformers embeddings. Install a CUDA-compatible torch build for this environment."
+        ) from exc
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        cuda_available = bool(torch.cuda.is_available())
+    warning_text = " ".join(str(item.message).strip() for item in captured if str(item.message).strip())
+
+    if not cuda_available:
+        if allow_fallback:
+            return "cpu"
+        detail = (
+            f"Requested embedding runtime.device={requested!r} for model={model}, but torch.cuda.is_available() is false. "
+            f"Current torch={torch.__version__} with CUDA build {torch.version.cuda or 'cpu-only'}."
+        )
+        if warning_text:
+            detail += f" PyTorch reported: {warning_text}"
+        detail += " Install a torch build compatible with the local NVIDIA driver, or upgrade the driver. CPU fallback is disabled."
+        raise RuntimeError(detail)
+
+    if requested == "cuda":
+        return "cuda"
+    try:
+        index = int(requested.split(":", 1)[1])
+    except (IndexError, ValueError):
+        raise RuntimeError(f"Unsupported CUDA device spec: {requested}. Use 'cuda' or 'cuda:<index>'.")
+    device_count = int(torch.cuda.device_count())
+    if index < 0 or index >= device_count:
+        raise RuntimeError(
+            f"Requested embedding runtime.device={requested!r}, but only {device_count} CUDA device(s) are visible."
+        )
+    return requested
+
+
+@lru_cache(maxsize=8)
+def _get_sentence_transformer(
+    model: str,
+    device: str | None,
+    endpoint: str | None,
+    cache_dir: str | None,
+    local_files_only: bool,
+    token: str | None,
+    allow_silent_fallback: bool,
+) -> Any:
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
         raise RuntimeError(
             "sentence-transformers is not installed. Run `pip install -e .[embeddings]` to use this model."
         ) from exc
-    return SentenceTransformer(model_name)
+    runtime = {
+        "device": device,
+        "allow_silent_fallback": allow_silent_fallback,
+    }
+    resolved_device = _resolve_sentence_transformer_device(model=model, runtime=runtime)
+    source_path, source_local_only = _prepare_sentence_transformer_source(
+        model=model,
+        endpoint=endpoint,
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
+        token=token,
+    )
+    with _temporary_huggingface_endpoint(endpoint):
+        try:
+            return SentenceTransformer(
+                source_path,
+                device=resolved_device,
+                cache_folder=cache_dir,
+                local_files_only=source_local_only,
+                token=token,
+            )
+        except Exception as exc:
+            mirror_hint = (
+                f" Configure embedding.runtime.huggingface.endpoint for a reachable mirror; current endpoint={endpoint!r}."
+                if endpoint
+                else " Configure embedding.runtime.huggingface.endpoint to use a reachable HuggingFace mirror."
+            )
+            raise RuntimeError(
+                f"Failed to load sentence-transformers model {model}. {mirror_hint} Original error: {exc}"
+            ) from exc
 
 
 def _embed_corpus_sentence_transformers(texts: list[str], *, model: str) -> np.ndarray:
     if not texts:
         return np.zeros((0, 0), dtype=np.float32)
-    encoder = _get_sentence_transformer(_sentence_transformer_name(model))
+    runtime = _runtime_for_model(model)
+    huggingface = runtime.get("huggingface") or {}
+    encoder = _get_sentence_transformer(
+        model,
+        runtime.get("device"),
+        huggingface.get("endpoint"),
+        huggingface.get("cache_dir"),
+        bool(huggingface.get("local_files_only", False)),
+        huggingface.get("token"),
+        bool(runtime.get("allow_silent_fallback", False)),
+    )
     vectors = encoder.encode(
         texts,
-        batch_size=32,
+        batch_size=int(runtime.get("batch_size") or DEFAULT_SENTENCE_TRANSFORMER_BATCH_SIZE),
         convert_to_numpy=True,
         normalize_embeddings=True,
         show_progress_bar=False,

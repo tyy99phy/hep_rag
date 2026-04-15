@@ -349,7 +349,14 @@ def ingest_online(
             _emit_progress(progress, f"ingesting metadata for {len(hits)} paper families...")
             download_tasks: list[dict[str, Any]] = []
             touched_work_ids: set[int] = set()
-            for hit in hits:
+            metadata_total = len(hits)
+            if metadata_total >= 1000:
+                metadata_report_every = 100
+            elif metadata_total >= 200:
+                metadata_report_every = 50
+            else:
+                metadata_report_every = 10
+            for idx, hit in enumerate(hits, start=1):
                 family_hits = [hit, *(hit.get("_family_members") or [])]
                 for family_hit in family_hits:
                     stats = upsert_work_from_hit(conn, collection_id=collection_id, hit=family_hit)
@@ -362,8 +369,27 @@ def ingest_online(
 
                 work_id = _find_work_id_for_hit(conn, hit)
                 if work_id is None:
+                    if idx % metadata_report_every == 0 or idx == metadata_total:
+                        _emit_progress(
+                            progress,
+                            "metadata ingest "
+                            f"{idx}/{metadata_total} families complete; "
+                            f"created={summary['metadata']['created']} "
+                            f"updated={summary['metadata']['updated']} "
+                            f"citations_written={summary['metadata']['citations_written']}",
+                        )
                     continue
                 touched_work_ids.add(int(work_id))
+
+                if idx % metadata_report_every == 0 or idx == metadata_total:
+                    _emit_progress(
+                        progress,
+                        "metadata ingest "
+                        f"{idx}/{metadata_total} families complete; "
+                        f"created={summary['metadata']['created']} "
+                        f"updated={summary['metadata']['updated']} "
+                        f"citations_written={summary['metadata']['citations_written']}",
+                    )
 
                 if len(download_tasks) >= download_cap:
                     continue

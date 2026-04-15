@@ -15,6 +15,7 @@ from hep_rag_v2.config import (
     apply_runtime_config,
     default_config,
     resolve_embedding_profile,
+    resolve_embedding_settings,
     resolve_mode,
     runtime_collection_config,
     save_config,
@@ -113,6 +114,29 @@ class ConfigRuntimeTests(unittest.TestCase):
         config["profiles"]["embedding"] = "does_not_exist"
         with self.assertRaises(ValueError):
             resolve_embedding_profile(config)
+
+    def test_resolve_embedding_settings_merges_huggingface_runtime_and_env_defaults(self) -> None:
+        config = default_config()
+        config["profiles"]["embedding"] = "semantic_small_local"
+        config["embedding"]["runtime"]["batch_size"] = 48
+        config["embedding"]["runtime"]["huggingface"]["endpoint"] = "https://hf-mirror.com"
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HF_HOME": "/tmp/hf-cache",
+                "HF_TOKEN": "env-token",
+            },
+            clear=False,
+        ):
+            resolved = resolve_embedding_settings(config)
+
+        self.assertEqual(resolved["model"], "sentence-transformers:BAAI/bge-small-en-v1.5")
+        self.assertEqual(resolved["runtime"]["device"], "cuda")
+        self.assertEqual(resolved["runtime"]["batch_size"], 48)
+        self.assertEqual(resolved["runtime"]["huggingface"]["endpoint"], "https://hf-mirror.com")
+        self.assertEqual(resolved["runtime"]["huggingface"]["cache_dir"], "/tmp/hf-cache")
+        self.assertEqual(resolved["runtime"]["huggingface"]["token"], "env-token")
 
     def test_save_and_load_round_trip_preserves_explicit_mode_and_profile_blocks(self) -> None:
         original_root = paths.workspace_root()

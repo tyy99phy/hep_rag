@@ -61,6 +61,7 @@ def cmd_fetch_papers(args: argparse.Namespace) -> None:
             config,
             query=args.query,
             limit=args.limit,
+            max_parallelism=args.max_parallelism,
             progress=emit_cli_status,
         )
         emit_cli_status(f"done. found {payload['effective_count']} candidate papers.")
@@ -79,6 +80,7 @@ def cmd_ingest_online(args: argparse.Namespace) -> None:
             query=args.query,
             limit=args.limit,
             collection_name=args.collection,
+            max_parallelism=args.max_parallelism,
             download_limit=args.download_limit,
             parse_limit=args.parse_limit,
             replace_existing=args.replace_existing,

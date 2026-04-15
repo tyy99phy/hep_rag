@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .embedding import (
+    configure_embedding_runtime,
     DEFAULT_VECTOR_DIM,
     DEFAULT_VECTOR_MODEL,
     HASH_IDF_VECTOR_MODEL,
@@ -29,6 +30,7 @@ __all__ = [
     "HASH_IDF_VECTOR_MODEL",
     "DEFAULT_VECTOR_MODEL",
     "DEFAULT_VECTOR_DIM",
+    "configure_embedding_runtime",
     "LocalIndex",
     "vector_index_counts",
     "rebuild_vector_indices",

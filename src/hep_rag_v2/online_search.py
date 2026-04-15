@@ -78,6 +78,15 @@ def _emit_progress(progress: ProgressCallback, message: str) -> None:
         progress(message)
 
 
+def _truncate_progress_text(value: Any, *, limit: int = 88) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[: limit - 3].rstrip() + "..."
+
+
 def _resolve_parallelism(
     *,
     requested: int | None,
@@ -139,10 +148,12 @@ def _search_online_hits(
 
     if len(search_plan["queries"]) == 1 or search_workers <= 1:
         for idx, search_query in enumerate(search_plan["queries"], start=1):
-            if len(search_plan["queries"]) == 1:
-                _emit_progress(progress, "searching INSPIRE...")
-            else:
-                _emit_progress(progress, f"searching INSPIRE ({idx}/{len(search_plan['queries'])})...")
+            query_label = f"INSPIRE query {idx}/{len(search_plan['queries'])}"
+            query_preview = _truncate_progress_text(search_query)
+            _emit_progress(
+                progress,
+                f'searching {query_label} limit={per_query_limit} page_size={page_size} q="{query_preview}"...',
+            )
             hits = search_literature(
                 search_query,
                 limit=per_query_limit,
@@ -153,16 +164,29 @@ def _search_online_hits(
                 timeout=timeout,
                 retries=retries,
                 sleep_sec=sleep_sec,
+                progress=progress,
+                progress_label=query_label,
             )
             ranked_batches[idx - 1] = (search_query, hits)
+            _emit_progress(
+                progress,
+                f"finished {query_label} results={len(hits)}",
+            )
     else:
         _emit_progress(
             progress,
-            f"searching INSPIRE with up to {search_workers} parallel requests...",
+            f"searching INSPIRE with up to {search_workers} parallel requests across {len(search_plan['queries'])} queries...",
         )
         with ThreadPoolExecutor(max_workers=search_workers) as pool:
-            futures = {
-                pool.submit(
+            futures: dict[Any, tuple[int, str]] = {}
+            for idx, search_query in enumerate(search_plan["queries"], start=1):
+                query_label = f"INSPIRE query {idx}/{len(search_plan['queries'])}"
+                query_preview = _truncate_progress_text(search_query)
+                _emit_progress(
+                    progress,
+                    f'searching {query_label} limit={per_query_limit} page_size={page_size} q="{query_preview}"...',
+                )
+                future = pool.submit(
                     search_literature,
                     search_query,
                     limit=per_query_limit,
@@ -173,16 +197,17 @@ def _search_online_hits(
                     timeout=timeout,
                     retries=retries,
                     sleep_sec=sleep_sec,
-                ): (idx, search_query)
-                for idx, search_query in enumerate(search_plan["queries"], start=1)
-            }
+                    progress=progress,
+                    progress_label=query_label,
+                )
+                futures[future] = (idx, search_query)
             for future in as_completed(futures):
                 idx, search_query = futures[future]
                 hits = future.result()
                 ranked_batches[idx - 1] = (search_query, hits)
                 _emit_progress(
                     progress,
-                    f"finished INSPIRE query ({idx}/{len(search_plan['queries'])}) results={len(hits)}",
+                    f"finished INSPIRE query {idx}/{len(search_plan['queries'])} results={len(hits)}",
                 )
 
     merged_hits, merge_stats = _merge_ranked_hits(ranked_batches, limit=max(1, limit))

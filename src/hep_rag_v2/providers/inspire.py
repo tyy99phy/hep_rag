@@ -4,7 +4,7 @@ import hashlib
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -12,6 +12,7 @@ from hep_rag_v2.metadata import first_arxiv_id, first_doi, first_title, year_fro
 
 
 INSPIRE_API = "https://inspirehep.net/api/literature"
+ProgressCallback = Callable[[str], None] | None
 
 
 def build_search_query(
@@ -39,8 +40,11 @@ def search_literature(
     timeout: int = 60,
     retries: int = 3,
     sleep_sec: float = 0.2,
+    progress: ProgressCallback = None,
+    progress_label: str | None = None,
 ) -> list[dict[str, Any]]:
     page_size = max(1, min(int(page_size), 50))
+    requested_limit = max(1, int(limit))
     effective_query = build_search_query(
         query,
         published_only=published_only,
@@ -56,22 +60,40 @@ def search_literature(
         params["fields"] = ",".join(fields)
 
     url = INSPIRE_API
-    while len(hits) < max(1, limit):
+    page_idx = 0
+    progress_prefix = str(progress_label or "INSPIRE").strip() or "INSPIRE"
+    while len(hits) < requested_limit:
+        page_idx += 1
         payload = _http_get_json(url, params=params, timeout=timeout, retries=retries)
+        target_hits = _resolve_target_hits(payload, requested_limit=requested_limit)
+        total_pages = max(1, (max(target_hits, 1) + page_size - 1) // page_size)
         batch = (((payload.get("hits") or {}).get("hits")) or [])
         if not batch:
+            _emit_progress(
+                progress,
+                f"{progress_prefix} page {page_idx}/{total_pages} fetched 0 hits ({len(hits)}/{target_hits} accumulated); stopping.",
+            )
             break
         hits.extend(batch)
-        if len(hits) >= limit:
+        accumulated = min(len(hits), requested_limit)
+        _emit_progress(
+            progress,
+            f"{progress_prefix} page {page_idx}/{total_pages} fetched {len(batch)} hits ({accumulated}/{target_hits} accumulated).",
+        )
+        if len(hits) >= requested_limit:
             break
         next_url = str((payload.get("links") or {}).get("next") or "").strip()
         if not next_url:
+            _emit_progress(
+                progress,
+                f"{progress_prefix} reached the last INSPIRE page at {accumulated}/{target_hits} accumulated hits.",
+            )
             break
         url = next_url
         params = None
         if sleep_sec > 0:
             time.sleep(sleep_sec)
-    return hits[:limit]
+    return hits[:requested_limit]
 
 
 def summarize_hit(hit: dict[str, Any]) -> dict[str, Any]:
@@ -284,6 +306,28 @@ def _http_get_json(
             last_error = exc
             time.sleep(min(1.5 * attempt, 5.0))
     raise RuntimeError(f"failed to fetch INSPIRE payload: {last_error}")
+
+
+def _emit_progress(progress: ProgressCallback, message: str) -> None:
+    if progress is None:
+        return
+    text = str(message or "").strip()
+    if text:
+        progress(text)
+
+
+def _resolve_target_hits(payload: dict[str, Any], *, requested_limit: int) -> int:
+    total = ((payload.get("hits") or {}).get("total"))
+    candidates = [total]
+    if isinstance(total, dict):
+        candidates.extend([total.get("value"), total.get("count")])
+    for candidate in candidates:
+        try:
+            value = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        return max(0, min(requested_limit, value))
+    return requested_limit
 
 
 def _looks_like_pdf_url(url: str) -> bool:

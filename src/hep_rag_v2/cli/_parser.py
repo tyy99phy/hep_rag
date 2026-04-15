@@ -60,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
     s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--limit", type=int, default=20)
+    s.add_argument("--max-parallelism", type=int, default=None, help="Override online query/download parallelism")
     s.set_defaults(func=cmd_fetch_papers)
 
     s = sub.add_parser("ingest-online", help="Search online, download PDFs, optionally parse with MinerU, then build indices")
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--collection", default=None, help="Override collection name")
     s.add_argument("--limit", type=int, default=20)
+    s.add_argument("--max-parallelism", type=int, default=None, help="Override online query/download parallelism")
     s.add_argument("--download-limit", type=int, default=None, help="Maximum number of PDFs to download")
     s.add_argument("--parse-limit", type=int, default=None, help="Maximum number of PDFs to send to MinerU")
     s.add_argument("--replace-existing", action="store_true", help="Rebuild already materialized documents")
@@ -148,10 +150,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_search_works)
 
     s = sub.add_parser("build-search-index", help="Rebuild SQLite FTS5 BM25 search indices")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["all", "works", "chunks", "formulas", "assets", "structure"], default="all")
     s.set_defaults(func=cmd_build_search_index)
 
     s = sub.add_parser("sync-search", help="Incrementally sync SQLite FTS5 BM25 search indices")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["all", "works", "chunks", "formulas", "assets", "structure"], default="all")
     s.add_argument("--scope", choices=["all", "dirty"], default="dirty")
     s.add_argument("--collection", default=None)
@@ -160,18 +166,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("search-bm25", help="Search works, chunks, formulas, or assets with SQLite FTS5 BM25")
     s.add_argument("query")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["works", "chunks", "formulas", "assets"], default="works")
     s.add_argument("--collection", default=None)
     s.add_argument("--limit", type=int, default=20)
     s.set_defaults(func=cmd_search_bm25)
 
     s = sub.add_parser("build-vector-index", help="Build local vector indices for works and/or chunks")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["all", "works", "chunks"], default="all")
     s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
     s.add_argument("--dim", type=int, default=768)
     s.set_defaults(func=cmd_build_vector_index)
 
     s = sub.add_parser("sync-vectors", help="Incrementally sync local vector indices")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["all", "works", "chunks"], default="all")
     s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
     s.add_argument("--dim", type=int, default=768)
@@ -181,6 +193,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_sync_vectors)
 
     s = sub.add_parser("sync-chroma-index", help="Mirror local vector indices into an optional Chroma vector store")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["all", "works", "chunks"], default="all")
     s.add_argument("--collection", default=None)
     s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
@@ -190,6 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("search-vector", help="Search works or chunks with the local vector index")
     s.add_argument("query")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["works", "chunks"], default="works")
     s.add_argument("--collection", default=None)
     s.add_argument("--limit", type=int, default=20)
@@ -200,6 +216,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("search-hybrid", help="Search with BM25 plus vector retrieval; auto mode can route broad queries to works")
     s.add_argument("query")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["auto", "works", "chunks"], default="auto")
     s.add_argument("--collection", default=None)
     s.add_argument("--limit", type=int, default=20)
@@ -221,6 +239,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_enrich_inspire_metadata)
 
     s = sub.add_parser("build-graph", help="Build citation and embedding-based graph edges")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["all", "bibliographic-coupling", "co-citation", "similarity"], default="all")
     s.add_argument("--collection", default=None)
     s.add_argument("--min-shared", type=int, default=2)
@@ -230,6 +250,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_build_graph)
 
     s = sub.add_parser("sync-graph", help="Incrementally sync graph edges")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["all", "bibliographic-coupling", "co-citation", "similarity"], default="all")
     s.add_argument("--min-shared", type=int, default=2)
     s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
@@ -241,6 +263,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_sync_graph)
 
     s = sub.add_parser("show-graph", help="Inspect graph neighbors for a work")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--work-id", type=int, default=None)
     s.add_argument("--id-type", choices=["inspire", "arxiv", "doi"], default=None)
     s.add_argument("--id-value", default=None)

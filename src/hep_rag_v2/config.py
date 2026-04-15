@@ -19,6 +19,12 @@ DEFAULT_EMBEDDING_PROFILES: dict[str, dict[str, Any]] = {
         "runtime": {
             "device": "cpu",
             "batch_size": 32,
+            "huggingface": {
+                "endpoint": "",
+                "cache_dir": "",
+                "local_files_only": False,
+                "token": "",
+            },
         },
     },
     "semantic_small_local": {
@@ -27,6 +33,12 @@ DEFAULT_EMBEDDING_PROFILES: dict[str, dict[str, Any]] = {
         "runtime": {
             "device": "cuda",
             "batch_size": 64,
+            "huggingface": {
+                "endpoint": "",
+                "cache_dir": "",
+                "local_files_only": False,
+                "token": "",
+            },
         },
     },
     "semantic_prod_local": {
@@ -35,6 +47,12 @@ DEFAULT_EMBEDDING_PROFILES: dict[str, dict[str, Any]] = {
         "runtime": {
             "device": "cuda",
             "batch_size": 32,
+            "huggingface": {
+                "endpoint": "",
+                "cache_dir": "",
+                "local_files_only": False,
+                "token": "",
+            },
         },
     },
 }
@@ -126,6 +144,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "runtime": {
             "device": "cpu",
             "batch_size": 32,
+            "huggingface": {
+                "endpoint": "",
+                "cache_dir": "",
+                "local_files_only": False,
+                "token": "",
+            },
         },
         "chroma": {
             "enabled": False,
@@ -337,6 +361,55 @@ def resolve_embedding_profile(config: dict[str, Any], *, name: str | None = None
     return resolved
 
 
+def resolve_embedding_settings(
+    config: dict[str, Any],
+    *,
+    model: str | None = None,
+    dim: int | None = None,
+) -> dict[str, Any]:
+    embedding_cfg = copy.deepcopy(config.get("embedding") or {})
+    selected_name = (
+        str((config.get("profiles") or {}).get("embedding") or "").strip()
+        or str(embedding_cfg.get("profile") or "").strip()
+        or None
+    )
+
+    resolved: dict[str, Any] = {}
+    if selected_name:
+        resolved = resolve_embedding_profile(config, name=selected_name)
+        legacy_overlay = _deep_diff(embedding_cfg, DEFAULT_CONFIG.get("embedding") or {})
+        legacy_overlay.pop("model", None)
+        legacy_overlay.pop("dim", None)
+        legacy_overlay.pop("profile", None)
+        _deep_update(resolved, legacy_overlay)
+    else:
+        _deep_update(resolved, embedding_cfg)
+
+    if model is not None:
+        resolved["model"] = str(model)
+    if dim is not None:
+        resolved["dim"] = int(dim)
+
+    runtime = copy.deepcopy(resolved.get("runtime") or {})
+    runtime["device"] = str(runtime.get("device") or "cpu").strip() or "cpu"
+    runtime["batch_size"] = max(1, int(runtime.get("batch_size") or 32))
+
+    huggingface = copy.deepcopy(runtime.get("huggingface") or {})
+    env_endpoint = str(os.environ.get("HF_ENDPOINT") or os.environ.get("HUGGINGFACE_HUB_ENDPOINT") or "").strip()
+    env_cache_dir = str(os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE") or "").strip()
+    env_token = str(os.environ.get("HF_TOKEN") or "").strip()
+
+    huggingface["endpoint"] = str(huggingface.get("endpoint") or env_endpoint or "").strip()
+    huggingface["cache_dir"] = str(huggingface.get("cache_dir") or env_cache_dir or "").strip()
+    huggingface["local_files_only"] = bool(huggingface.get("local_files_only", False))
+    huggingface["token"] = str(huggingface.get("token") or env_token or "").strip()
+
+    runtime["huggingface"] = huggingface
+    resolved["runtime"] = runtime
+    resolved["allow_silent_fallback"] = bool(resolved.get("allow_silent_fallback", False))
+    return resolved
+
+
 def _resolve_workspace_root(
     *,
     config: dict[str, Any],
@@ -362,3 +435,17 @@ def _deep_update(target: dict[str, Any], updates: dict[str, Any]) -> None:
             _deep_update(target[key], value)
         else:
             target[key] = value
+
+
+def _deep_diff(current: dict[str, Any], default: dict[str, Any]) -> dict[str, Any]:
+    diff: dict[str, Any] = {}
+    for key, value in current.items():
+        default_value = default.get(key)
+        if isinstance(value, dict) and isinstance(default_value, dict):
+            nested = _deep_diff(value, default_value)
+            if nested:
+                diff[key] = nested
+            continue
+        if value != default_value:
+            diff[key] = copy.deepcopy(value)
+    return diff

@@ -77,10 +77,15 @@ embedding:
   dim: 768
   profile: semantic_small_local
   build_after_ingest: true
-  allow_silent_fallback: false
+  allow_silent_fallback: false      # 推荐保持 false；cuda 不可用时直接失败，不回退 CPU
   runtime:
     device: cuda                    # 单张 3090 友好默认
     batch_size: 64
+    huggingface:
+      endpoint: ""                  # 例如 https://hf-mirror.com；为空则走官方源
+      cache_dir: ""                 # 可选：例如 ~/.cache/huggingface
+      local_files_only: false
+      token: ""
   chroma:
     enabled: false
     dir: null
@@ -92,18 +97,33 @@ embedding_profiles:
     runtime:
       device: cpu
       batch_size: 32
+      huggingface:
+        endpoint: ""
+        cache_dir: ""
+        local_files_only: false
+        token: ""
   semantic_small_local:
     model: sentence-transformers:BAAI/bge-small-en-v1.5
     dim: 384
     runtime:
       device: cuda
       batch_size: 64
+      huggingface:
+        endpoint: ""
+        cache_dir: ""
+        local_files_only: false
+        token: ""
   semantic_prod_local:
     model: sentence-transformers:BAAI/bge-base-en-v1.5
     dim: 768
     runtime:
       device: cuda
       batch_size: 32
+      huggingface:
+        endpoint: ""
+        cache_dir: ""
+        local_files_only: false
+        token: ""
 
 ingest:
   chunk_size: 2400

@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from hep_rag_v2 import paths
+from hep_rag_v2.config import apply_runtime_config, resolve_config_path, resolve_embedding_settings
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.graph import rebuild_graph_edges
 from hep_rag_v2.maintenance import (
@@ -25,6 +27,7 @@ from hep_rag_v2.search import (
 from hep_rag_v2.service.inspect import show_graph_payload
 from hep_rag_v2.vector import (
     DEFAULT_VECTOR_MODEL,
+    configure_embedding_runtime,
     rebuild_vector_indices,
     route_query,
     search_chunks_hybrid,
@@ -40,7 +43,37 @@ from hep_rag_v2.vector import (
 from ._common import emit_cli_status
 
 
+def _maybe_apply_search_config(args: argparse.Namespace) -> dict[str, Any] | None:
+    config_path = getattr(args, "config", None)
+    workspace_root = getattr(args, "workspace", None)
+    default_root = Path(__file__).resolve().parents[3]
+
+    if config_path is not None:
+        _, config = apply_runtime_config(config_path=config_path, workspace_root=workspace_root)
+        return config
+
+    if workspace_root is None and paths.workspace_root() != default_root.resolve():
+        return None
+
+    resolved_default = resolve_config_path(None)
+    if resolved_default.exists():
+        _, config = apply_runtime_config(config_path=resolved_default, workspace_root=workspace_root)
+        return config
+
+    if workspace_root:
+        paths.set_workspace_root(Path(workspace_root).expanduser().resolve())
+    return None
+
+
+def _configure_vector_runtime(config: dict[str, Any] | None, *, model: str, dim: int | None = None) -> None:
+    if config is None:
+        return
+    settings = resolve_embedding_settings(config, model=model, dim=dim)
+    configure_embedding_runtime(model=str(settings.get("model") or model), settings=settings)
+
+
 def cmd_build_search_index(args: argparse.Namespace) -> None:
+    _maybe_apply_search_config(args)
     ensure_db()
 
     with connect() as conn:
@@ -53,6 +86,7 @@ def cmd_build_search_index(args: argparse.Namespace) -> None:
 
 
 def cmd_search_bm25(args: argparse.Namespace) -> None:
+    _maybe_apply_search_config(args)
     ensure_db()
     if not args.query.strip():
         raise SystemExit("Query cannot be empty.")
@@ -68,6 +102,8 @@ def cmd_search_bm25(args: argparse.Namespace) -> None:
 
 
 def cmd_build_vector_index(args: argparse.Namespace) -> None:
+    config = _maybe_apply_search_config(args)
+    _configure_vector_runtime(config, model=args.model, dim=args.dim)
     ensure_db()
     try:
         with connect() as conn:
@@ -88,6 +124,8 @@ def cmd_build_vector_index(args: argparse.Namespace) -> None:
 
 
 def cmd_search_vector(args: argparse.Namespace) -> None:
+    config = _maybe_apply_search_config(args)
+    _configure_vector_runtime(config, model=args.model)
     ensure_db()
     if not args.query.strip():
         raise SystemExit("Query cannot be empty.")
@@ -124,6 +162,8 @@ def cmd_search_vector(args: argparse.Namespace) -> None:
 
 
 def cmd_sync_chroma_index(args: argparse.Namespace) -> None:
+    config = _maybe_apply_search_config(args)
+    _configure_vector_runtime(config, model=args.model)
     ensure_db()
     try:
         with connect() as conn:
@@ -143,6 +183,8 @@ def cmd_sync_chroma_index(args: argparse.Namespace) -> None:
 
 
 def cmd_search_hybrid(args: argparse.Namespace) -> None:
+    config = _maybe_apply_search_config(args)
+    _configure_vector_runtime(config, model=args.model)
     ensure_db()
     if not args.query.strip():
         raise SystemExit("Query cannot be empty.")
@@ -190,6 +232,7 @@ def cmd_search_hybrid(args: argparse.Namespace) -> None:
 
 
 def cmd_build_graph(args: argparse.Namespace) -> None:
+    _maybe_apply_search_config(args)
     ensure_db()
     try:
         with connect() as conn:
@@ -212,6 +255,7 @@ def cmd_build_graph(args: argparse.Namespace) -> None:
 
 
 def cmd_show_graph(args: argparse.Namespace) -> None:
+    _maybe_apply_search_config(args)
     payload = show_graph_payload(
         work_id=args.work_id,
         id_type=args.id_type,
@@ -225,16 +269,20 @@ def cmd_show_graph(args: argparse.Namespace) -> None:
 
 
 def cmd_sync_search(args: argparse.Namespace) -> None:
+    _maybe_apply_search_config(args)
     summary = _run_sync_job(lane="search", args=args, rebuild=lambda conn: _sync_search_impl(conn, args))
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 def cmd_sync_vectors(args: argparse.Namespace) -> None:
+    config = _maybe_apply_search_config(args)
+    _configure_vector_runtime(config, model=args.model, dim=args.dim)
     summary = _run_sync_job(lane="vectors", args=args, rebuild=lambda conn: _sync_vectors_impl(conn, args))
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 def cmd_sync_graph(args: argparse.Namespace) -> None:
+    _maybe_apply_search_config(args)
     summary = _run_sync_job(lane="graph", args=args, rebuild=lambda conn: _sync_graph_impl(conn, args))
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from hep_rag_v2.config import resolve_embedding_settings
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.metadata import expand_work_ids_with_family, family_payload_map
 from hep_rag_v2.providers.local_transformers import LocalTransformersClient
 from hep_rag_v2.providers.openai_compatible import OpenAICompatibleClient
 from hep_rag_v2.vector import (
     DEFAULT_VECTOR_MODEL,
+    configure_embedding_runtime,
     route_query,
     search_chunks_hybrid,
     search_works_hybrid,
@@ -57,7 +59,9 @@ def retrieve(
     retrieval_cfg = config.get("retrieval") or {}
     collection = collection_name or str((config.get("collection") or {}).get("name") or "default")
     requested_target = str(target or retrieval_cfg.get("target") or "auto")
-    embedding_model = str(model or (config.get("embedding") or {}).get("model") or DEFAULT_VECTOR_MODEL)
+    embedding_settings = resolve_embedding_settings(config, model=model)
+    embedding_model = str(embedding_settings.get("model") or DEFAULT_VECTOR_MODEL)
+    configure_embedding_runtime(model=embedding_model, settings=embedding_settings)
     limit_value = max(1, int(limit or retrieval_cfg.get("limit") or 8))
     chunk_limit = max(limit_value, int(retrieval_cfg.get("chunk_limit") or max(limit_value, 12)))
     retrieval_workers = _resolve_parallelism(

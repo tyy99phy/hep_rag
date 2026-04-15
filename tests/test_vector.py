@@ -3,13 +3,16 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest import mock
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -30,6 +33,7 @@ from hep_rag_v2.vector import (
     search_chunks_vector,
     search_works_vector,
 )
+from hep_rag_v2.vector.embedding import configure_embedding_runtime, _embed_corpus
 
 
 class TestVectorSearch(unittest.TestCase):
@@ -183,6 +187,116 @@ class TestVectorSearch(unittest.TestCase):
                     self.assertGreaterEqual(len(chunk_results), 1)
                     self.assertIn("profile likelihood", chunk_results[0]["clean_text"].lower())
                     self.assertNotIn("bibliography entry", chunk_results[0]["clean_text"].lower())
+
+    def test_sentence_transformer_runtime_applies_mirror_cache_and_batch_size(self) -> None:
+        model = "sentence-transformers:unit/test-model"
+        captured_env: dict[str, str | None] = {}
+        snapshot_calls: dict[str, object] = {}
+        original_endpoint = "https://huggingface.co"
+        original_template = original_endpoint + "/{repo_id}/resolve/{revision}/{filename}"
+
+        class _FakeEncoder:
+            def encode(self, texts, **kwargs):
+                self.texts = list(texts)
+                self.kwargs = dict(kwargs)
+                return np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32)
+
+        fake_encoder = _FakeEncoder()
+        fake_constants = ModuleType("huggingface_hub.constants")
+        fake_constants.ENDPOINT = original_endpoint
+        fake_constants.HUGGINGFACE_CO_URL_TEMPLATE = original_template
+        fake_huggingface_hub = ModuleType("huggingface_hub")
+        fake_huggingface_hub.constants = fake_constants
+
+        def _snapshot_download(*args, **kwargs):
+            snapshot_calls["args"] = args
+            snapshot_calls["kwargs"] = dict(kwargs)
+            snapshot_calls["HF_ENDPOINT"] = os.environ.get("HF_ENDPOINT")
+            snapshot_calls["HUGGINGFACE_HUB_ENDPOINT"] = os.environ.get("HUGGINGFACE_HUB_ENDPOINT")
+            snapshot_calls["HF_CONSTANTS_ENDPOINT"] = fake_constants.ENDPOINT
+            snapshot_calls["HF_CONSTANTS_TEMPLATE"] = fake_constants.HUGGINGFACE_CO_URL_TEMPLATE
+            return "/tmp/fake-snapshot"
+
+        fake_huggingface_hub.snapshot_download = _snapshot_download
+
+        def _constructor(*args, **kwargs):
+            captured_env["HF_ENDPOINT"] = os.environ.get("HF_ENDPOINT")
+            captured_env["HUGGINGFACE_HUB_ENDPOINT"] = os.environ.get("HUGGINGFACE_HUB_ENDPOINT")
+            captured_env["HF_CONSTANTS_ENDPOINT"] = fake_constants.ENDPOINT
+            captured_env["HF_CONSTANTS_TEMPLATE"] = fake_constants.HUGGINGFACE_CO_URL_TEMPLATE
+            captured_env["args"] = args
+            captured_env["kwargs"] = kwargs
+            return fake_encoder
+
+        fake_module = SimpleNamespace(SentenceTransformer=_constructor)
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "sentence_transformers": fake_module,
+                "huggingface_hub": fake_huggingface_hub,
+                "huggingface_hub.constants": fake_constants,
+            },
+        ):
+            configure_embedding_runtime(
+                model=model,
+                settings={
+                    "allow_silent_fallback": False,
+                    "runtime": {
+                        "device": "cpu",
+                        "batch_size": 7,
+                        "huggingface": {
+                            "endpoint": "https://hf-mirror.com",
+                            "cache_dir": "/tmp/hf-cache",
+                            "local_files_only": False,
+                            "token": "secret-token",
+                        },
+                    },
+                },
+            )
+            vectors, _extras, actual_dim = _embed_corpus(["hello world"], model=model, dim=384)
+            self.assertEqual(fake_constants.ENDPOINT, original_endpoint)
+            self.assertEqual(fake_constants.HUGGINGFACE_CO_URL_TEMPLATE, original_template)
+
+        self.assertEqual(actual_dim, 3)
+        self.assertEqual(vectors.shape, (1, 3))
+        self.assertEqual(snapshot_calls["args"], ())
+        self.assertEqual(
+            snapshot_calls["kwargs"],
+            {
+                "repo_id": "unit/test-model",
+                "cache_dir": "/tmp/hf-cache",
+                "local_files_only": False,
+                "token": "secret-token",
+            },
+        )
+        self.assertEqual(snapshot_calls["HF_ENDPOINT"], "https://hf-mirror.com")
+        self.assertEqual(snapshot_calls["HUGGINGFACE_HUB_ENDPOINT"], "https://hf-mirror.com")
+        self.assertEqual(snapshot_calls["HF_CONSTANTS_ENDPOINT"], "https://hf-mirror.com")
+        self.assertEqual(
+            snapshot_calls["HF_CONSTANTS_TEMPLATE"],
+            "https://hf-mirror.com/{repo_id}/resolve/{revision}/{filename}",
+        )
+        self.assertEqual(captured_env["HF_ENDPOINT"], "https://hf-mirror.com")
+        self.assertEqual(captured_env["HUGGINGFACE_HUB_ENDPOINT"], "https://hf-mirror.com")
+        self.assertEqual(captured_env["HF_CONSTANTS_ENDPOINT"], "https://hf-mirror.com")
+        self.assertEqual(
+            captured_env["HF_CONSTANTS_TEMPLATE"],
+            "https://hf-mirror.com/{repo_id}/resolve/{revision}/{filename}",
+        )
+        self.assertEqual(captured_env["args"], ("/tmp/fake-snapshot",))
+        self.assertEqual(
+            captured_env["kwargs"],
+            {
+                "device": "cpu",
+                "cache_folder": "/tmp/hf-cache",
+                "local_files_only": True,
+                "token": "secret-token",
+            },
+        )
+        self.assertEqual(fake_encoder.texts, ["hello world"])
+        self.assertEqual(fake_encoder.kwargs["batch_size"], 7)
+        self.assertTrue(fake_encoder.kwargs["convert_to_numpy"])
+        self.assertTrue(fake_encoder.kwargs["normalize_embeddings"])
 
     def test_hash_idf_vector_model_handles_natural_language_query_noise(self) -> None:
         with tempfile.TemporaryDirectory() as td:

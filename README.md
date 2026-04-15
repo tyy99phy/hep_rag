@@ -120,6 +120,15 @@ mineru:
 
 embedding:
   model: hash-idf-v1                 # 内置无依赖模型，或填 sentence-transformers 模型名
+  allow_silent_fallback: false       # 推荐保持 false；GPU 不可用时直接失败
+  runtime:
+    device: cuda
+    batch_size: 64
+    huggingface:
+      endpoint: ""                   # 例如 https://hf-mirror.com
+      cache_dir: ""                  # 例如 ~/.cache/huggingface
+      local_files_only: false
+      token: ""
 
 retrieval:
   max_parallelism: 2                # 本地混合检索中 BM25 / 向量的最大并行数
@@ -162,6 +171,18 @@ llm:
 ```
 
 完整字段说明见 [`config.example.yaml`](config.example.yaml)。
+
+如果你在国内网络环境下使用 `sentence-transformers`，建议显式配置：
+
+```yaml
+embedding:
+  runtime:
+    huggingface:
+      endpoint: "https://hf-mirror.com"
+      cache_dir: "~/.cache/huggingface"
+```
+
+如果 `embedding.runtime.device: cuda`，框架现在会先做 CUDA 预检查；一旦本机 `torch` 和 NVIDIA driver 不兼容，会直接失败并提示修复，不再默默回退到 CPU。
 
 `fetch-papers` / `ingest-online` 在在线检索阶段会先做多 query 改写，再对命中结果做 family-aware 去重后截取 top-N；同一 work 的 note / preprint / article 等相关版本会保留在返回结果的 `related_versions` 中。返回结果里还会带 `local_summary` 和 `local_status`，用于标记本地是否已有该 work、PDF 是否已缓存、MinerU 是否已经 materialize。
 
