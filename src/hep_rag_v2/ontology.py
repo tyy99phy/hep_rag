@@ -7,6 +7,7 @@ from collections import Counter
 from typing import Any
 
 from hep_rag_v2.methods import ensure_method_schema
+from hep_rag_v2.physics import ensure_physics_schema, top_physics_concept_counts
 from hep_rag_v2.query import analyze_query, query_match_stats
 from hep_rag_v2.results import ensure_result_schema
 from hep_rag_v2.structure import ensure_structure_schema
@@ -50,6 +51,7 @@ def rebuild_ontology_summaries(
     ensure_structure_schema(conn)
     ensure_result_schema(conn)
     ensure_method_schema(conn)
+    ensure_physics_schema(conn)
 
     collection_id = _collection_id(conn, collection) if collection else None
     scope_name = collection or "all"
@@ -61,6 +63,7 @@ def rebuild_ontology_summaries(
         _build_topic_summaries,
         _build_result_kind_summaries,
         _build_method_family_summaries,
+        _build_physics_concept_summaries,
     )
     for builder in builders:
         items.extend(
@@ -121,6 +124,8 @@ def search_ontology_summaries(
                 " ".join(str(item) for item in metadata.get("collaborations") or []),
                 " ".join(str(item) for item in metadata.get("result_kinds") or []),
                 " ".join(str(item) for item in metadata.get("method_families") or []),
+                " ".join(str(item) for item in metadata.get("physics_concepts") or []),
+                str(metadata.get("concept_kind") or ""),
             )
             if part
         )
@@ -185,7 +190,8 @@ def ontology_summary_counts(conn: sqlite3.Connection) -> dict[str, int]:
           SUM(CASE WHEN facet_kind = 'collaboration' THEN 1 ELSE 0 END) AS ontology_collaboration_summaries,
           SUM(CASE WHEN facet_kind = 'topic' THEN 1 ELSE 0 END) AS ontology_topic_summaries,
           SUM(CASE WHEN facet_kind = 'result_kind' THEN 1 ELSE 0 END) AS ontology_result_summaries,
-          SUM(CASE WHEN facet_kind = 'method_family' THEN 1 ELSE 0 END) AS ontology_method_summaries
+          SUM(CASE WHEN facet_kind = 'method_family' THEN 1 ELSE 0 END) AS ontology_method_summaries,
+          SUM(CASE WHEN facet_kind = 'physics_concept' THEN 1 ELSE 0 END) AS ontology_physics_summaries
         FROM ontology_summaries
         """
     ).fetchone()
@@ -276,6 +282,7 @@ def _build_collaboration_summaries(
         work_ids = [int(item["work_id"]) for item in representative_works]
         result_kinds = _top_value_counts(conn, table="result_objects", field="result_kind", work_ids=work_ids)
         method_families = _top_value_counts(conn, table="method_objects", field="method_family", work_ids=work_ids)
+        physics_concepts = top_physics_concept_counts(conn, work_ids=work_ids)
         out.append(
             _summary_payload(
                 scope_name=scope_name,
@@ -290,6 +297,7 @@ def _build_collaboration_summaries(
                     representative_works=representative_works,
                     result_kinds=result_kinds,
                     method_families=method_families,
+                    physics_concepts=physics_concepts,
                 ),
                 work_count=int(row["work_count"] or 0),
                 signal_count=int(row["work_count"] or 0),
@@ -298,6 +306,7 @@ def _build_collaboration_summaries(
                 metadata={
                     "result_kinds": result_kinds,
                     "method_families": method_families,
+                    "physics_concepts": physics_concepts,
                 },
             )
         )
@@ -345,6 +354,7 @@ def _build_topic_summaries(
         )
         work_ids = [int(item["work_id"]) for item in representative_works]
         collaborations = _top_collaboration_counts(conn, work_ids=work_ids)
+        physics_concepts = top_physics_concept_counts(conn, work_ids=work_ids)
         out.append(
             _summary_payload(
                 scope_name=scope_name,
@@ -358,6 +368,7 @@ def _build_topic_summaries(
                     signal_count=int(row["work_count"] or 0),
                     representative_works=representative_works,
                     collaborations=collaborations,
+                    physics_concepts=physics_concepts,
                 ),
                 work_count=int(row["work_count"] or 0),
                 signal_count=int(row["work_count"] or 0),
@@ -367,6 +378,7 @@ def _build_topic_summaries(
                     "topic_source": topic_source,
                     "topic_key": topic_key,
                     "collaborations": collaborations,
+                    "physics_concepts": physics_concepts,
                 },
             )
         )
@@ -412,6 +424,7 @@ def _build_result_kind_summaries(
         )
         work_ids = [int(item["work_id"]) for item in representative_works]
         method_families = _top_value_counts(conn, table="method_objects", field="method_family", work_ids=work_ids)
+        physics_concepts = top_physics_concept_counts(conn, work_ids=work_ids)
         out.append(
             _summary_payload(
                 scope_name=scope_name,
@@ -425,6 +438,7 @@ def _build_result_kind_summaries(
                     signal_count=int(row["signal_count"] or 0),
                     representative_works=representative_works,
                     method_families=method_families,
+                    physics_concepts=physics_concepts,
                 ),
                 work_count=int(row["work_count"] or 0),
                 signal_count=int(row["signal_count"] or 0),
@@ -432,6 +446,7 @@ def _build_result_kind_summaries(
                 source_refs=[f"result_kind:{facet_key}"],
                 metadata={
                     "method_families": method_families,
+                    "physics_concepts": physics_concepts,
                 },
             )
         )
@@ -477,6 +492,7 @@ def _build_method_family_summaries(
         )
         work_ids = [int(item["work_id"]) for item in representative_works]
         result_kinds = _top_value_counts(conn, table="result_objects", field="result_kind", work_ids=work_ids)
+        physics_concepts = top_physics_concept_counts(conn, work_ids=work_ids)
         out.append(
             _summary_payload(
                 scope_name=scope_name,
@@ -490,6 +506,7 @@ def _build_method_family_summaries(
                     signal_count=int(row["signal_count"] or 0),
                     representative_works=representative_works,
                     result_kinds=result_kinds,
+                    physics_concepts=physics_concepts,
                 ),
                 work_count=int(row["work_count"] or 0),
                 signal_count=int(row["signal_count"] or 0),
@@ -497,6 +514,84 @@ def _build_method_family_summaries(
                 source_refs=[f"method_family:{facet_key}"],
                 metadata={
                     "result_kinds": result_kinds,
+                    "physics_concepts": physics_concepts,
+                },
+            )
+        )
+    return out
+
+
+def _build_physics_concept_summaries(
+    conn: sqlite3.Connection,
+    *,
+    collection_id: int | None,
+    scope_name: str,
+    representative_limit: int,
+) -> list[dict[str, Any]]:
+    collection_join = ""
+    params: list[Any] = []
+    if collection_id is not None:
+        collection_join = "JOIN collection_works cw ON cw.work_id = wpg.work_id AND cw.collection_id = ?"
+        params.append(collection_id)
+    rows = conn.execute(
+        f"""
+        SELECT
+          pc.physics_concept_id,
+          pc.concept_key,
+          pc.label,
+          pc.concept_kind,
+          COUNT(DISTINCT wpg.work_id) AS work_count
+        FROM physics_concepts pc
+        JOIN work_physics_groundings wpg ON wpg.physics_concept_id = pc.physics_concept_id
+        {collection_join}
+        GROUP BY pc.physics_concept_id, pc.concept_key, pc.label, pc.concept_kind
+        HAVING work_count >= 2
+        ORDER BY work_count DESC, pc.label
+        """
+        ,
+        params,
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        concept_id = int(row["physics_concept_id"])
+        representative_works = _representative_works_for_physics_concept(
+            conn,
+            concept_id=concept_id,
+            collection_id=collection_id,
+            limit=representative_limit,
+        )
+        work_ids = [int(item["work_id"]) for item in representative_works]
+        collaborations = _top_collaboration_counts(conn, work_ids=work_ids)
+        result_kinds = _top_value_counts(conn, table="result_objects", field="result_kind", work_ids=work_ids)
+        method_families = _top_value_counts(conn, table="method_objects", field="method_family", work_ids=work_ids)
+        physics_concepts = top_physics_concept_counts(conn, work_ids=work_ids)
+        out.append(
+            _summary_payload(
+                scope_name=scope_name,
+                collection_id=collection_id,
+                facet_kind="physics_concept",
+                facet_key=str(row["concept_key"]),
+                label=str(row["label"]),
+                summary_text=_compose_summary_text(
+                    label=f"{row['label']} physics summary",
+                    work_count=int(row["work_count"] or 0),
+                    signal_count=int(row["work_count"] or 0),
+                    representative_works=representative_works,
+                    collaborations=collaborations,
+                    result_kinds=result_kinds,
+                    method_families=method_families,
+                    physics_concepts=physics_concepts,
+                ),
+                work_count=int(row["work_count"] or 0),
+                signal_count=int(row["work_count"] or 0),
+                representative_works=representative_works,
+                source_refs=[f"physics_concept:{row['concept_key']}"],
+                metadata={
+                    "concept_kind": str(row["concept_kind"] or "section"),
+                    "collaborations": collaborations,
+                    "result_kinds": result_kinds,
+                    "method_families": method_families,
+                    "physics_concepts": physics_concepts,
                 },
             )
         )
@@ -618,6 +713,34 @@ def _representative_works_for_method_family(
     return [_work_row_payload(row) for row in rows]
 
 
+def _representative_works_for_physics_concept(
+    conn: sqlite3.Connection,
+    *,
+    concept_id: int,
+    collection_id: int | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    collection_join = ""
+    params: list[Any] = []
+    if collection_id is not None:
+        collection_join = "JOIN collection_works cw ON cw.work_id = w.work_id AND cw.collection_id = ?"
+        params.append(collection_id)
+    params.extend([concept_id, limit])
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT w.work_id, w.title, w.year, w.canonical_source, w.canonical_id
+        FROM works w
+        JOIN work_physics_groundings wpg ON wpg.work_id = w.work_id
+        {collection_join}
+        WHERE wpg.physics_concept_id = ?
+        ORDER BY wpg.confidence DESC, COALESCE(w.year, 0) DESC, COALESCE(w.citation_count, 0) DESC, w.work_id DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [_work_row_payload(row) for row in rows]
+
+
 def _top_value_counts(
     conn: sqlite3.Connection,
     *,
@@ -674,6 +797,7 @@ def _compose_summary_text(
     collaborations: list[str] | None = None,
     result_kinds: list[str] | None = None,
     method_families: list[str] | None = None,
+    physics_concepts: list[str] | None = None,
 ) -> str:
     parts = [label, f"works={work_count}", f"signals={signal_count}"]
     if representative_works:
@@ -691,6 +815,8 @@ def _compose_summary_text(
         parts.append("result kinds: " + ", ".join(result_kinds[:3]))
     if method_families:
         parts.append("method families: " + ", ".join(method_families[:3]))
+    if physics_concepts:
+        parts.append("physics concepts: " + ", ".join(physics_concepts[:3]))
     return " | ".join(part for part in parts if part)
 
 

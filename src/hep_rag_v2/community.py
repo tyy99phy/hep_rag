@@ -9,6 +9,7 @@ from collections import Counter
 from typing import Any
 
 from hep_rag_v2.methods import ensure_method_schema
+from hep_rag_v2.physics import ensure_physics_schema, top_physics_concept_counts
 from hep_rag_v2.query import analyze_query, query_match_stats
 from hep_rag_v2.results import ensure_result_schema
 from hep_rag_v2.structure import ensure_structure_schema
@@ -20,8 +21,10 @@ TOPIC_EDGE_WEIGHT = 0.18
 RESULT_EDGE_WEIGHT = 0.12
 METHOD_EDGE_WEIGHT = 0.10
 COLLABORATION_EDGE_WEIGHT = 0.08
+PHYSICS_EDGE_WEIGHT = 0.16
 OVERVIEW_MIN_EDGE_WEIGHT = 0.26
 OVERVIEW_TOPIC_WEIGHT = 0.16
+OVERVIEW_PHYSICS_WEIGHT = 0.14
 OVERVIEW_RESULT_WEIGHT = 0.12
 OVERVIEW_METHOD_WEIGHT = 0.10
 OVERVIEW_COLLABORATION_WEIGHT = 0.08
@@ -95,6 +98,7 @@ def rebuild_community_summaries(
     ensure_structure_schema(conn)
     ensure_result_schema(conn)
     ensure_method_schema(conn)
+    ensure_physics_schema(conn)
 
     collection_id = _collection_id(conn, collection) if collection else None
     scope_name = collection or "all"
@@ -134,12 +138,14 @@ def rebuild_community_summaries(
         top_topics = _top_topic_counts(conn, work_ids=member_ids)
         top_results = _top_value_counts(conn, table="result_objects", field="result_kind", work_ids=member_ids)
         top_methods = _top_value_counts(conn, table="method_objects", field="method_family", work_ids=member_ids)
+        top_physics = top_physics_concept_counts(conn, work_ids=member_ids)
         label = _community_label(
             representative_works=representative_works,
             collaborations=top_collaborations,
             topics=top_topics,
             result_kinds=top_results,
             method_families=top_methods,
+            physics_concepts=top_physics,
         )
         fine_descriptors.append(
             {
@@ -154,6 +160,7 @@ def rebuild_community_summaries(
                 "topics": top_topics,
                 "result_kinds": top_results,
                 "method_families": top_methods,
+                "physics_concepts": top_physics,
                 "source_refs": [f"work:{work_id}" for work_id in member_ids[: min(8, len(member_ids))]],
             }
         )
@@ -189,6 +196,7 @@ def rebuild_community_summaries(
                 topics=list(descriptor["topics"]),
                 result_kinds=list(descriptor["result_kinds"]),
                 method_families=list(descriptor["method_families"]),
+                physics_concepts=list(descriptor["physics_concepts"]),
                 child_labels=list(descriptor.get("child_labels") or []),
             ),
             work_count=int(descriptor["work_count"]),
@@ -204,6 +212,7 @@ def rebuild_community_summaries(
                 "topics": list(descriptor["topics"]),
                 "result_kinds": list(descriptor["result_kinds"]),
                 "method_families": list(descriptor["method_families"]),
+                "physics_concepts": list(descriptor["physics_concepts"]),
                 "child_summary_ids": list(descriptor.get("child_summary_ids") or []),
                 "child_labels": list(descriptor.get("child_labels") or []),
                 "hierarchy_version": ALGORITHM,
@@ -236,6 +245,7 @@ def rebuild_community_summaries(
                     topics=list(descriptor["topics"]),
                     result_kinds=list(descriptor["result_kinds"]),
                     method_families=list(descriptor["method_families"]),
+                    physics_concepts=list(descriptor["physics_concepts"]),
                     parent_label=_parent_label_from_descriptors(
                         overview_descriptors,
                         parent_summary_id=parent_summary_id,
@@ -255,6 +265,7 @@ def rebuild_community_summaries(
                     "topics": list(descriptor["topics"]),
                     "result_kinds": list(descriptor["result_kinds"]),
                     "method_families": list(descriptor["method_families"]),
+                    "physics_concepts": list(descriptor["physics_concepts"]),
                     "parent_summary_id": parent_summary_id,
                     "hierarchy_version": ALGORITHM,
                 },
@@ -317,6 +328,7 @@ def search_community_summaries(
                 " ".join(str(item) for item in metadata.get("topics") or []),
                 " ".join(str(item) for item in metadata.get("result_kinds") or []),
                 " ".join(str(item) for item in metadata.get("method_families") or []),
+                " ".join(str(item) for item in metadata.get("physics_concepts") or []),
                 " ".join(str(item) for item in metadata.get("child_labels") or []),
             )
             if part
@@ -522,12 +534,14 @@ def _build_overview_descriptors(
         top_topics = _top_topic_counts(conn, work_ids=member_ids)
         top_results = _top_value_counts(conn, table="result_objects", field="result_kind", work_ids=member_ids)
         top_methods = _top_value_counts(conn, table="method_objects", field="method_family", work_ids=member_ids)
+        top_physics = top_physics_concept_counts(conn, work_ids=member_ids)
         label = _community_label(
             representative_works=representative_works,
             collaborations=top_collaborations,
             topics=top_topics,
             result_kinds=top_results,
             method_families=top_methods,
+            physics_concepts=top_physics,
         )
         community_key = f"overview_{_group_key(child_summary_ids)}"
         summary_id = _summary_id(scope_name=scope_name, community_key=community_key)
@@ -547,6 +561,7 @@ def _build_overview_descriptors(
                 "topics": top_topics,
                 "result_kinds": top_results,
                 "method_families": top_methods,
+                "physics_concepts": top_physics,
                 "child_summary_ids": child_summary_ids,
                 "child_labels": [str(descriptor["label"]) for descriptor in child_descriptors[:4]],
                 "source_refs": [*child_summary_ids[:4], *[f"work:{work_id}" for work_id in member_ids[:4]]],
@@ -577,6 +592,13 @@ def _overview_pair_score(
         right_descriptor.get("topics"),
         weight=OVERVIEW_TOPIC_WEIGHT,
         signal_name="shared_topic",
+        signals=signals,
+    )
+    score += _shared_signal_contribution(
+        left_descriptor.get("physics_concepts"),
+        right_descriptor.get("physics_concepts"),
+        weight=OVERVIEW_PHYSICS_WEIGHT,
+        signal_name="shared_physics",
         signals=signals,
     )
     score += _shared_signal_contribution(
@@ -694,6 +716,22 @@ def _aggregate_edges(
         weight=COLLABORATION_EDGE_WEIGHT,
         max_group_size=8,
         signal_name="collaboration_overlap",
+    )
+    _load_group_overlap_edges(
+        conn,
+        table_sql="""
+            SELECT wpg.physics_concept_id AS key_id, wpg.work_id AS work_id
+            FROM work_physics_groundings wpg
+            {scope_join}
+            ORDER BY wpg.physics_concept_id, wpg.work_id
+        """,
+        scope_work_column="wpg.work_id",
+        collection_id=collection_id,
+        edge_map=edge_map,
+        work_id_set=work_id_set,
+        weight=PHYSICS_EDGE_WEIGHT,
+        max_group_size=20,
+        signal_name="physics_overlap",
     )
     return edge_map
 
@@ -966,11 +1004,13 @@ def _community_label(
     topics: list[str],
     result_kinds: list[str],
     method_families: list[str],
+    physics_concepts: list[str] | None = None,
 ) -> str:
     topic = _count_label(topics[0]) if topics else ""
     collaboration = _count_label(collaborations[0]) if collaborations else ""
     result_kind = _count_label(result_kinds[0]) if result_kinds else ""
     method_family = _count_label(method_families[0]) if method_families else ""
+    physics_concept = _count_label(physics_concepts[0]) if physics_concepts else ""
     if topic and collaboration:
         return f"{collaboration} / {topic} community"
     if topic:
@@ -983,6 +1023,10 @@ def _community_label(
         return f"{collaboration} / {method_family} community"
     if method_family:
         return f"{method_family} community"
+    if physics_concept and collaboration:
+        return f"{collaboration} / {physics_concept} community"
+    if physics_concept:
+        return f"{physics_concept} community"
     if collaboration:
         return f"{collaboration} literature community"
     if representative_works:
@@ -1002,6 +1046,7 @@ def _compose_summary_text(
     topics: list[str],
     result_kinds: list[str],
     method_families: list[str],
+    physics_concepts: list[str] | None = None,
     child_labels: list[str] | None = None,
     parent_label: str | None = None,
 ) -> str:
@@ -1029,6 +1074,8 @@ def _compose_summary_text(
         parts.append("result kinds: " + ", ".join(result_kinds[:3]))
     if method_families:
         parts.append("method families: " + ", ".join(method_families[:3]))
+    if physics_concepts:
+        parts.append("physics concepts: " + ", ".join(physics_concepts[:3]))
     return " | ".join(part for part in parts if part)
 
 

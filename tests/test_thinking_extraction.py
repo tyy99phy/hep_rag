@@ -206,10 +206,13 @@ class ThinkingExtractionTests(unittest.TestCase):
             mock.patch("hep_rag_v2.pipeline.build_result_objects", _record("results", {"ready": 1})), \
             mock.patch("hep_rag_v2.pipeline.build_method_objects", _record("methods", {"ready": 1})), \
             mock.patch("hep_rag_v2.pipeline.build_transfer_candidates", _record("transfer", {"ready": 1})), \
+            mock.patch("hep_rag_v2.pipeline.build_physics_substrate", _record("physics", {"concepts": {"total": 0}})), \
+            mock.patch("hep_rag_v2.pipeline.rebuild_ontology_summaries", _record("ontology", {"total": 0})), \
+            mock.patch("hep_rag_v2.pipeline.rebuild_community_summaries", _record("community", {"total": 0})), \
             mock.patch("hep_rag_v2.pipeline.clear_dirty_work_ids") as clear_dirty:
             summary = _sync_thinking_engine_extractions(conn, collection_name="default", work_ids=[101])
 
-        self.assertEqual(call_order, ["structure", "results", "methods", "transfer"])
+        self.assertEqual(call_order, ["structure", "results", "methods", "transfer", "physics", "ontology", "ontology", "community", "community"])
         self.assertEqual(summary["structure"]["ready"], 1)
         clear_dirty.assert_any_call(conn, lane="structure", collection="default", work_ids=[101])
 

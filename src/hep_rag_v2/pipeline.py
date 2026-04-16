@@ -14,6 +14,7 @@ from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.maintenance import clear_dirty_work_ids, mark_work_dirty
 from hep_rag_v2.methods import build_method_objects
 from hep_rag_v2.ontology import rebuild_ontology_summaries
+from hep_rag_v2.physics import build_physics_substrate
 from hep_rag_v2.results import build_result_objects
 from hep_rag_v2.structure import build_work_structures
 from hep_rag_v2.transfer import build_transfer_candidates
@@ -137,6 +138,7 @@ def _sync_thinking_engine_extractions(
             "results": None,
             "methods": None,
             "transfer": None,
+            "physics": None,
             "ontology": None,
             "community": None,
         }
@@ -145,6 +147,7 @@ def _sync_thinking_engine_extractions(
         "results": build_result_objects(conn, work_ids=work_ids, collection=collection_name),
         "methods": build_method_objects(conn, work_ids=work_ids, collection=collection_name),
         "transfer": build_transfer_candidates(conn, work_ids=work_ids, collection=collection_name),
+        "physics": build_physics_substrate(conn, work_ids=work_ids, collection=collection_name),
         "ontology": {
             "collection": rebuild_ontology_summaries(conn, collection=collection_name),
             "all": rebuild_ontology_summaries(conn, collection=None),

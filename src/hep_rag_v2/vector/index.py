@@ -9,6 +9,7 @@ from typing import Any, Callable
 import numpy as np
 
 from hep_rag_v2 import paths
+from hep_rag_v2.physics import chunk_physics_text_map, work_physics_text_map
 from .embedding import (
     DEFAULT_VECTOR_DIM,
     DEFAULT_VECTOR_MODEL,
@@ -219,6 +220,7 @@ def _rebuild_work_vector_index(conn: sqlite3.Connection, *, model: str, dim: int
         ORDER BY wt.work_id, t.label
         """,
     )
+    physics = work_physics_text_map(conn)
     rows = conn.execute(
         """
         SELECT work_id, title, abstract, year
@@ -240,6 +242,7 @@ def _rebuild_work_vector_index(conn: sqlite3.Connection, *, model: str, dim: int
                     str(row["title"] or ""),
                     str(row["abstract"] or ""),
                     topics.get(work_id, ""),
+                    physics.get(work_id, ""),
                 )
                 if str(part).strip()
             )
@@ -295,6 +298,7 @@ def _rebuild_chunk_vector_index(conn: sqlite3.Connection, *, model: str, dim: in
         ORDER BY c.chunk_id
         """
     ).fetchall()
+    physics = chunk_physics_text_map(conn)
 
     ids: list[int] = []
     texts: list[str] = []
@@ -306,6 +310,7 @@ def _rebuild_chunk_vector_index(conn: sqlite3.Connection, *, model: str, dim: in
                 for part in (
                     str(row["title"] or ""),
                     str(row["section_hint"] or ""),
+                    physics.get(int(row["chunk_id"]), ""),
                     str(row["clean_text"] or ""),
                 )
                 if str(part).strip()

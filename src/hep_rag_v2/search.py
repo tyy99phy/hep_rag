@@ -5,6 +5,7 @@ import sqlite3
 from collections import defaultdict
 from typing import Any
 
+from hep_rag_v2.physics import chunk_physics_text_map, work_physics_text_map
 from hep_rag_v2.query import build_match_queries
 from hep_rag_v2.textnorm import normalize_search_text
 
@@ -182,6 +183,7 @@ def rebuild_work_search_index(conn: sqlite3.Connection, *, force: bool = True) -
         ORDER BY work_id, is_primary DESC, id_type
         """,
     )
+    physics = work_physics_text_map(conn)
 
     inserted = 0
     for row in work_rows:
@@ -199,7 +201,7 @@ def rebuild_work_search_index(conn: sqlite3.Connection, *, force: bool = True) -
             normalize_search_text(authors.get(work_id, "")),
             normalize_search_text(collaborations.get(work_id, "")),
             normalize_search_text(venues.get(work_id, "")),
-            normalize_search_text(identifiers.get(work_id, "")),
+            normalize_search_text(" ".join(part for part in (identifiers.get(work_id, ""), physics.get(work_id, "")) if part)),
         )
         conn.execute(
             f"""
@@ -236,6 +238,7 @@ def rebuild_chunk_search_index(conn: sqlite3.Connection, *, force: bool = True) 
     ).fetchall()
 
     inserted = 0
+    physics = chunk_physics_text_map(conn)
     for row in chunk_rows:
         work_id = int(row["work_id"])
         chunk_id = int(row["chunk_id"])
@@ -248,7 +251,7 @@ def rebuild_chunk_search_index(conn: sqlite3.Connection, *, force: bool = True) 
             str(row["section_hint"] or ""),
             str(row["page_hint"] or ""),
             normalize_search_text(str(row["title"] or "")),
-            normalize_search_text(str(row["section_hint"] or "")),
+            normalize_search_text(" ".join(part for part in (str(row["section_hint"] or ""), physics.get(chunk_id, "")) if part)),
             normalize_search_text(str(row["clean_text"] or "")),
         )
         conn.execute(

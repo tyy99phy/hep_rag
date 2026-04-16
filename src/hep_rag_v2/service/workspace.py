@@ -6,6 +6,7 @@ from typing import Any
 from hep_rag_v2.community import community_summary_counts
 from hep_rag_v2.db import connect, ensure_db
 from hep_rag_v2.ontology import ontology_summary_counts
+from hep_rag_v2.physics import physics_summary_counts
 from hep_rag_v2.search_scope import available_search_scopes
 from hep_rag_v2.search import search_index_counts
 from hep_rag_v2.vector import vector_index_counts
@@ -18,6 +19,7 @@ def workspace_status_payload() -> dict[str, Any]:
         by_collection = _collections_payload(conn)
         snapshot.update(community_summary_counts(conn))
         snapshot.update(ontology_summary_counts(conn))
+        snapshot.update(physics_summary_counts(conn))
         snapshot.update(search_index_counts(conn))
         snapshot.update(vector_index_counts(conn))
         search_scopes = available_search_scopes(

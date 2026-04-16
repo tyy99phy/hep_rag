@@ -638,6 +638,91 @@ CREATE TABLE IF NOT EXISTS pdg_sections (
   FOREIGN KEY (source_id) REFERENCES pdg_sources(source_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS physics_concepts (
+  physics_concept_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  concept_key TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL,
+  normalized_label TEXT NOT NULL,
+  concept_kind TEXT NOT NULL DEFAULT 'section',
+  source_kind TEXT NOT NULL DEFAULT 'pdg_seed',
+  source_ref TEXT,
+  summary_text TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS physics_aliases (
+  physics_alias_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  physics_concept_id INTEGER NOT NULL,
+  alias_text TEXT NOT NULL,
+  normalized_alias TEXT NOT NULL,
+  alias_kind TEXT NOT NULL DEFAULT 'label',
+  confidence REAL NOT NULL DEFAULT 1.0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(physics_concept_id, normalized_alias),
+  FOREIGN KEY (physics_concept_id) REFERENCES physics_concepts(physics_concept_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS physics_relations (
+  physics_relation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  src_physics_concept_id INTEGER NOT NULL,
+  dst_physics_concept_id INTEGER NOT NULL,
+  relation_kind TEXT NOT NULL,
+  weight REAL NOT NULL DEFAULT 1.0,
+  source_ref TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(src_physics_concept_id, dst_physics_concept_id, relation_kind),
+  FOREIGN KEY (src_physics_concept_id) REFERENCES physics_concepts(physics_concept_id) ON DELETE CASCADE,
+  FOREIGN KEY (dst_physics_concept_id) REFERENCES physics_concepts(physics_concept_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS work_physics_groundings (
+  work_physics_grounding_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id INTEGER NOT NULL,
+  physics_concept_id INTEGER NOT NULL,
+  match_kind TEXT NOT NULL DEFAULT 'alias',
+  confidence REAL NOT NULL DEFAULT 0.0,
+  matched_alias TEXT,
+  evidence_text TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(work_id, physics_concept_id),
+  FOREIGN KEY (work_id) REFERENCES works(work_id) ON DELETE CASCADE,
+  FOREIGN KEY (physics_concept_id) REFERENCES physics_concepts(physics_concept_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS result_physics_groundings (
+  result_physics_grounding_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  result_object_id INTEGER NOT NULL,
+  physics_concept_id INTEGER NOT NULL,
+  match_kind TEXT NOT NULL DEFAULT 'alias',
+  confidence REAL NOT NULL DEFAULT 0.0,
+  matched_alias TEXT,
+  evidence_text TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(result_object_id, physics_concept_id),
+  FOREIGN KEY (result_object_id) REFERENCES result_objects(result_object_id) ON DELETE CASCADE,
+  FOREIGN KEY (physics_concept_id) REFERENCES physics_concepts(physics_concept_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS chunk_physics_groundings (
+  chunk_physics_grounding_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chunk_id INTEGER NOT NULL,
+  physics_concept_id INTEGER NOT NULL,
+  match_kind TEXT NOT NULL DEFAULT 'alias',
+  confidence REAL NOT NULL DEFAULT 0.0,
+  matched_alias TEXT,
+  evidence_text TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(chunk_id, physics_concept_id),
+  FOREIGN KEY (chunk_id) REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+  FOREIGN KEY (physics_concept_id) REFERENCES physics_concepts(physics_concept_id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_collections_name ON collections(name);
 CREATE INDEX IF NOT EXISTS idx_dirty_objects_lane ON dirty_objects(lane, object_kind, updated_at);
 CREATE INDEX IF NOT EXISTS idx_dirty_objects_collection ON dirty_objects(collection_id, lane);
@@ -669,5 +754,14 @@ CREATE INDEX IF NOT EXISTS idx_reasoning_sessions_status ON reasoning_sessions(s
 CREATE INDEX IF NOT EXISTS idx_reasoning_steps_session ON reasoning_steps(reasoning_session_id, step_index);
 CREATE INDEX IF NOT EXISTS idx_idea_candidates_session ON idea_candidates(reasoning_session_id, rank_order);
 CREATE INDEX IF NOT EXISTS idx_pdg_sections_source ON pdg_sections(source_id, order_index);
+CREATE INDEX IF NOT EXISTS idx_physics_concepts_kind ON physics_concepts(concept_kind, label);
+CREATE INDEX IF NOT EXISTS idx_physics_aliases_norm ON physics_aliases(normalized_alias);
+CREATE INDEX IF NOT EXISTS idx_physics_relations_src ON physics_relations(src_physics_concept_id, relation_kind);
+CREATE INDEX IF NOT EXISTS idx_work_physics_groundings_work ON work_physics_groundings(work_id, confidence);
+CREATE INDEX IF NOT EXISTS idx_work_physics_groundings_concept ON work_physics_groundings(physics_concept_id, confidence);
+CREATE INDEX IF NOT EXISTS idx_result_physics_groundings_result ON result_physics_groundings(result_object_id, confidence);
+CREATE INDEX IF NOT EXISTS idx_result_physics_groundings_concept ON result_physics_groundings(physics_concept_id, confidence);
+CREATE INDEX IF NOT EXISTS idx_chunk_physics_groundings_chunk ON chunk_physics_groundings(chunk_id, confidence);
+CREATE INDEX IF NOT EXISTS idx_chunk_physics_groundings_concept ON chunk_physics_groundings(physics_concept_id, confidence);
 CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_work ON chunks(work_id);

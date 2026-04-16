@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from hep_rag_v2 import paths
 from hep_rag_v2.fulltext import annotate_blocks, import_mineru_source, load_content_list, load_manifest, parsed_blocks_from_content_list
+from hep_rag_v2.physics import build_physics_substrate
 from hep_rag_v2.textnorm import normalize_display_text
+
+_CONTEXT_HEADING_RE = re.compile(r"\b(review|meson|boson|quark|lepton|neutrino|higgs|matrix|mixing|decay|physics)\b", re.IGNORECASE)
+_GENERIC_CHILD_RE = re.compile(r"\b(properties|property|decays?|masses?|lifetimes?|parameters?|branching|couplings?|matrix|form factors?|widths?)\b", re.IGNORECASE)
 
 PDG_SCHEMA = """
 CREATE TABLE IF NOT EXISTS pdg_sources (
@@ -115,6 +120,7 @@ def import_pdg_source(
                     section["capsule_text"],
                 ),
             )
+        physics_summary = build_physics_substrate(conn, collection=None, work_ids=None)
     return {
         "source_id": source_id,
         "title": title,
@@ -122,6 +128,7 @@ def import_pdg_source(
         "parsed_dir": str(dest_dir),
         "block_count": len(parsed_blocks),
         "capsule_count": len(sections),
+        "physics": physics_summary,
         "import_manifest": manifest,
     }
 
@@ -130,19 +137,49 @@ def _collect_pdg_sections(annotated_blocks: list[Any], *, title: str, max_capsul
     sections: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     root_title = normalize_display_text(title) or title
+    heading_stack: list[tuple[int, str]] = []
+    latent_context_title: str | None = None
     for annotated in annotated_blocks:
+        heading_title = normalize_display_text(annotated.heading_clean_title or annotated.clean_text or annotated.parsed.raw_text) or root_title
+        if annotated.is_heading and annotated.section_kind not in {"body", "appendix", "abstract"}:
+            if _CONTEXT_HEADING_RE.search(heading_title):
+                latent_context_title = heading_title
+            continue
         if annotated.is_heading and annotated.section_kind in {"body", "appendix", "abstract"}:
+            promote_as_child = False
             if current is not None and current["raw_text"].strip():
                 current["capsule_text"] = _capsule_text(current, max_capsule_chars=max_capsule_chars)
                 sections.append(current)
-            heading_title = normalize_display_text(annotated.heading_clean_title or annotated.clean_text or annotated.parsed.raw_text) or root_title
+            heading_level = max(1, int(annotated.heading_level or 1))
+            if current is not None and not current["raw_text"].strip():
+                current_title = str(current.get("title") or "")
+                promote_as_child = (
+                    bool(_CONTEXT_HEADING_RE.search(current_title))
+                    and bool(_GENERIC_CHILD_RE.search(heading_title))
+                )
+            if latent_context_title and heading_title != latent_context_title:
+                if not heading_stack:
+                    heading_stack = [(1, latent_context_title)]
+                    heading_level = max(2, heading_level)
+                elif heading_stack[0][1] != latent_context_title:
+                    heading_stack = [(1, latent_context_title), *heading_stack]
+                    heading_level = max(2, heading_level)
+            if promote_as_child and heading_stack:
+                heading_level = max(heading_level + 1, int(heading_stack[-1][0]) + 1)
+            else:
+                heading_stack = [item for item in heading_stack if item[0] < heading_level]
+                if latent_context_title and heading_title != latent_context_title and not heading_stack:
+                    heading_stack = [(1, latent_context_title)]
+                    heading_level = max(2, heading_level)
+            heading_stack.append((heading_level, heading_title))
+            path_titles = [root_title, *[item[1] for item in heading_stack]]
             current = {
-                "parent_title": root_title,
+                "parent_title": heading_stack[-2][1] if len(heading_stack) >= 2 else root_title,
                 "title": heading_title,
                 "clean_title": heading_title,
-                "path_text": f"{root_title} / {heading_title}",
+                "path_text": " / ".join(path_titles),
                 "section_kind": annotated.section_kind,
-                "level": int(annotated.heading_level or 1),
+                "level": heading_level,
                 "page_start": annotated.parsed.page,
                 "page_end": annotated.parsed.page,
                 "raw_text": "",
