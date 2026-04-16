@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 from collections import Counter
@@ -13,12 +14,18 @@ from hep_rag_v2.results import ensure_result_schema
 from hep_rag_v2.structure import ensure_structure_schema
 
 
-ALGORITHM = "weighted_components_v1"
+ALGORITHM = "weighted_components_hierarchy_v1"
 MIN_EDGE_WEIGHT = 0.38
 TOPIC_EDGE_WEIGHT = 0.18
 RESULT_EDGE_WEIGHT = 0.12
 METHOD_EDGE_WEIGHT = 0.10
 COLLABORATION_EDGE_WEIGHT = 0.08
+OVERVIEW_MIN_EDGE_WEIGHT = 0.26
+OVERVIEW_TOPIC_WEIGHT = 0.16
+OVERVIEW_RESULT_WEIGHT = 0.12
+OVERVIEW_METHOD_WEIGHT = 0.10
+OVERVIEW_COLLABORATION_WEIGHT = 0.08
+OVERVIEW_CROSS_EDGE_CAP = 0.24
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS community_summaries (
@@ -26,11 +33,15 @@ CREATE TABLE IF NOT EXISTS community_summaries (
   collection_id INTEGER,
   community_key TEXT NOT NULL,
   algorithm TEXT NOT NULL DEFAULT 'weighted_components_v1',
+  community_level TEXT NOT NULL DEFAULT 'fine',
+  parent_summary_id TEXT,
   label TEXT NOT NULL,
   summary_text TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'ready',
   work_count INTEGER NOT NULL DEFAULT 0,
   edge_count INTEGER NOT NULL DEFAULT 0,
+  child_summary_ids_json TEXT NOT NULL DEFAULT '[]',
+  lineage_json TEXT NOT NULL DEFAULT '[]',
   representative_works_json TEXT NOT NULL DEFAULT '[]',
   source_refs_json TEXT NOT NULL DEFAULT '[]',
   metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -40,12 +51,37 @@ CREATE TABLE IF NOT EXISTS community_summaries (
   FOREIGN KEY (collection_id) REFERENCES collections(collection_id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_community_summaries_scope
-  ON community_summaries(collection_id, work_count, edge_count);
+  ON community_summaries(collection_id, community_level, work_count, edge_count);
 """
 
 
 def ensure_community_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    existing = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(community_summaries)").fetchall()
+    }
+    migrations = (
+        (
+            "community_level",
+            "ALTER TABLE community_summaries ADD COLUMN community_level TEXT NOT NULL DEFAULT 'fine'",
+        ),
+        (
+            "parent_summary_id",
+            "ALTER TABLE community_summaries ADD COLUMN parent_summary_id TEXT",
+        ),
+        (
+            "child_summary_ids_json",
+            "ALTER TABLE community_summaries ADD COLUMN child_summary_ids_json TEXT NOT NULL DEFAULT '[]'",
+        ),
+        (
+            "lineage_json",
+            "ALTER TABLE community_summaries ADD COLUMN lineage_json TEXT NOT NULL DEFAULT '[]'",
+        ),
+    )
+    for column_name, sql in migrations:
+        if column_name not in existing:
+            conn.execute(sql)
 
 
 def rebuild_community_summaries(
@@ -76,7 +112,7 @@ def rebuild_community_summaries(
     work_map = _work_payload_map(conn, work_ids=work_ids)
     edge_map = _aggregate_edges(conn, work_ids=work_ids, collection_id=collection_id)
     communities = _build_components(work_ids=work_ids, edge_map=edge_map, min_edge_weight=min_edge_weight)
-    items: list[dict[str, Any]] = []
+    fine_descriptors: list[dict[str, Any]] = []
     active_edge_total = 0
     for member_ids in communities:
         if len(member_ids) < 2:
@@ -105,37 +141,125 @@ def rebuild_community_summaries(
             result_kinds=top_results,
             method_families=top_methods,
         )
-        payload = _summary_payload(
-            scope_name=scope_name,
-            collection_id=collection_id,
-            community_key=_community_key(member_ids),
-            label=label,
-            summary_text=_compose_summary_text(
-                label=label,
-                work_count=len(member_ids),
-                edge_count=int(edge_stats["edge_count"]),
-                representative_works=representative_works,
-                signal_mix=list(edge_stats["signal_mix"]),
-                collaborations=top_collaborations,
-                topics=top_topics,
-                result_kinds=top_results,
-                method_families=top_methods,
-            ),
-            work_count=len(member_ids),
-            edge_count=int(edge_stats["edge_count"]),
-            representative_works=representative_works,
-            source_refs=[f"work:{work_id}" for work_id in member_ids[: min(8, len(member_ids))]],
-            metadata={
-                "algorithm": ALGORITHM,
-                "member_work_ids": list(member_ids),
+        fine_descriptors.append(
+            {
+                "community_key": _community_key(member_ids),
+                "member_ids": list(member_ids),
+                "label": label,
+                "work_count": len(member_ids),
+                "edge_count": int(edge_stats["edge_count"]),
+                "representative_works": representative_works,
                 "signal_mix": list(edge_stats["signal_mix"]),
                 "collaborations": top_collaborations,
                 "topics": top_topics,
                 "result_kinds": top_results,
                 "method_families": top_methods,
+                "source_refs": [f"work:{work_id}" for work_id in member_ids[: min(8, len(member_ids))]],
+            }
+        )
+
+    overview_descriptors, parent_map = _build_overview_descriptors(
+        conn,
+        collection_id=collection_id,
+        scope_name=scope_name,
+        work_map=work_map,
+        edge_map=edge_map,
+        descriptors=fine_descriptors,
+        representative_limit=representative_limit,
+        min_edge_weight=min_edge_weight,
+    )
+    items = [
+        _summary_payload(
+            scope_name=scope_name,
+            collection_id=collection_id,
+            community_key=str(descriptor["community_key"]),
+            community_level="overview",
+            parent_summary_id=None,
+            child_summary_ids=list(descriptor.get("child_summary_ids") or []),
+            lineage=[],
+            label=str(descriptor["label"]),
+            summary_text=_compose_summary_text(
+                label=str(descriptor["label"]),
+                community_level="overview",
+                work_count=int(descriptor["work_count"]),
+                edge_count=int(descriptor["edge_count"]),
+                representative_works=list(descriptor["representative_works"]),
+                signal_mix=list(descriptor["signal_mix"]),
+                collaborations=list(descriptor["collaborations"]),
+                topics=list(descriptor["topics"]),
+                result_kinds=list(descriptor["result_kinds"]),
+                method_families=list(descriptor["method_families"]),
+                child_labels=list(descriptor.get("child_labels") or []),
+            ),
+            work_count=int(descriptor["work_count"]),
+            edge_count=int(descriptor["edge_count"]),
+            representative_works=list(descriptor["representative_works"]),
+            source_refs=list(descriptor["source_refs"]),
+            metadata={
+                "algorithm": ALGORITHM,
+                "community_level": "overview",
+                "member_work_ids": list(descriptor["member_ids"]),
+                "signal_mix": list(descriptor["signal_mix"]),
+                "collaborations": list(descriptor["collaborations"]),
+                "topics": list(descriptor["topics"]),
+                "result_kinds": list(descriptor["result_kinds"]),
+                "method_families": list(descriptor["method_families"]),
+                "child_summary_ids": list(descriptor.get("child_summary_ids") or []),
+                "child_labels": list(descriptor.get("child_labels") or []),
+                "hierarchy_version": ALGORITHM,
             },
         )
-        items.append(payload)
+        for descriptor in overview_descriptors
+    ]
+    for descriptor in fine_descriptors:
+        summary_id = _summary_id(scope_name=scope_name, community_key=str(descriptor["community_key"]))
+        parent_summary_id = parent_map.get(summary_id)
+        lineage = [parent_summary_id] if parent_summary_id else []
+        items.append(
+            _summary_payload(
+                scope_name=scope_name,
+                collection_id=collection_id,
+                community_key=str(descriptor["community_key"]),
+                community_level="fine",
+                parent_summary_id=parent_summary_id,
+                child_summary_ids=[],
+                lineage=lineage,
+                label=str(descriptor["label"]),
+                summary_text=_compose_summary_text(
+                    label=str(descriptor["label"]),
+                    community_level="fine",
+                    work_count=int(descriptor["work_count"]),
+                    edge_count=int(descriptor["edge_count"]),
+                    representative_works=list(descriptor["representative_works"]),
+                    signal_mix=list(descriptor["signal_mix"]),
+                    collaborations=list(descriptor["collaborations"]),
+                    topics=list(descriptor["topics"]),
+                    result_kinds=list(descriptor["result_kinds"]),
+                    method_families=list(descriptor["method_families"]),
+                    parent_label=_parent_label_from_descriptors(
+                        overview_descriptors,
+                        parent_summary_id=parent_summary_id,
+                        scope_name=scope_name,
+                    ),
+                ),
+                work_count=int(descriptor["work_count"]),
+                edge_count=int(descriptor["edge_count"]),
+                representative_works=list(descriptor["representative_works"]),
+                source_refs=list(descriptor["source_refs"]),
+                metadata={
+                    "algorithm": ALGORITHM,
+                    "community_level": "fine",
+                    "member_work_ids": list(descriptor["member_ids"]),
+                    "signal_mix": list(descriptor["signal_mix"]),
+                    "collaborations": list(descriptor["collaborations"]),
+                    "topics": list(descriptor["topics"]),
+                    "result_kinds": list(descriptor["result_kinds"]),
+                    "method_families": list(descriptor["method_families"]),
+                    "parent_summary_id": parent_summary_id,
+                    "hierarchy_version": ALGORITHM,
+                },
+            )
+        )
 
     for item in items:
         _upsert_community_summary(conn, item)
@@ -144,6 +268,8 @@ def rebuild_community_summaries(
         "collection": scope_name,
         "algorithm": ALGORITHM,
         "total": len(items),
+        "fine_total": len(fine_descriptors),
+        "overview_total": len(overview_descriptors),
         "edge_count": active_edge_total,
     }
 
@@ -156,7 +282,7 @@ def search_community_summaries(
     limit: int = 8,
 ) -> list[dict[str, Any]]:
     ensure_community_schema(conn)
-    if _scope_summary_count(conn, collection=collection) == 0:
+    if _scope_summary_count(conn, collection=collection) == 0 or _scope_has_stale_algorithm(conn, collection=collection):
         rebuild_community_summaries(conn, collection=collection)
 
     rows = _load_scope_rows(conn, collection=collection)
@@ -164,7 +290,8 @@ def search_community_summaries(
         return []
 
     profile = analyze_query(query)
-    scored: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    overview_scored: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    fine_scored: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     for row in rows:
         payload = dict(row)
         label = str(payload.get("label") or "").strip()
@@ -172,6 +299,9 @@ def search_community_summaries(
         representative_works = _loads_json_list(payload.get("representative_works_json"))
         source_refs = _loads_json_list(payload.get("source_refs_json"))
         metadata = _loads_json_dict(payload.get("metadata_json"))
+        child_summary_ids = _loads_json_list(payload.get("child_summary_ids_json"))
+        lineage = _loads_json_list(payload.get("lineage_json"))
+        community_level = str(payload.get("community_level") or metadata.get("community_level") or "fine")
         combined_text = " ".join(
             part
             for part in (
@@ -187,6 +317,7 @@ def search_community_summaries(
                 " ".join(str(item) for item in metadata.get("topics") or []),
                 " ".join(str(item) for item in metadata.get("result_kinds") or []),
                 " ".join(str(item) for item in metadata.get("method_families") or []),
+                " ".join(str(item) for item in metadata.get("child_labels") or []),
             )
             if part
         )
@@ -197,6 +328,7 @@ def search_community_summaries(
 
         work_count = int(payload.get("work_count") or 0)
         edge_count = int(payload.get("edge_count") or 0)
+        child_count = len(child_summary_ids)
         score = (
             float(hits) * 1.6
             + float(coverage)
@@ -204,12 +336,17 @@ def search_community_summaries(
             + float(label_coverage) * 0.4
             + min(work_count, 30) * 0.02
             + min(edge_count, 30) * 0.015
+            + (min(child_count, 6) * 0.03 if community_level == "overview" else 0.0)
         )
         payload.update(
             {
                 "summary_id": str(payload["summary_id"]),
                 "title": label,
                 "summary": summary_text,
+                "community_level": community_level,
+                "parent_summary_id": payload.get("parent_summary_id"),
+                "child_summary_ids": child_summary_ids,
+                "lineage": lineage,
                 "representative_works": representative_works,
                 "source_refs": source_refs,
                 "metadata": metadata,
@@ -221,22 +358,61 @@ def search_community_summaries(
                 "search_type": "community",
             }
         )
-        scored.append(
+        record = (
+            (
+                -float(score),
+                0 if community_level == "overview" else 1,
+                -int(hits),
+                -float(coverage),
+                -int(label_hits),
+                -int(work_count),
+                -int(edge_count),
+                label.casefold(),
+            ),
+            payload,
+        )
+        if community_level == "overview":
+            overview_scored.append(record)
+        else:
+            fine_scored.append(record)
+
+    if not overview_scored:
+        ordered = [payload for _, payload in sorted(fine_scored)[: max(1, int(limit))]]
+        for rank, payload in enumerate(ordered, start=1):
+            payload["rank"] = rank
+        return ordered
+
+    overview_limit = min(max(1, int(limit)), 2)
+    selected_overviews = [payload for _, payload in sorted(overview_scored)[:overview_limit]]
+    selected_parent_ids = {str(item["summary_id"]) for item in selected_overviews}
+    reranked_fine: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    for _, payload in fine_scored:
+        parent_summary_id = str(payload.get("parent_summary_id") or "")
+        lineage = [str(item) for item in list(payload.get("lineage") or [])]
+        in_selected_route = parent_summary_id in selected_parent_ids or any(
+            item in selected_parent_ids for item in lineage
+        )
+        if not in_selected_route and int(payload.get("query_group_hits") or 0) == 0 and int(payload.get("label_group_hits") or 0) == 0:
+            continue
+        route_score = float(payload.get("hybrid_score") or 0.0) + (0.35 if in_selected_route else 0.0)
+        payload["route_score"] = round(route_score, 6)
+        reranked_fine.append(
             (
                 (
-                    -float(score),
-                    -int(hits),
-                    -float(coverage),
-                    -int(label_hits),
-                    -int(work_count),
-                    -int(edge_count),
-                    label.casefold(),
+                    -route_score,
+                    0 if in_selected_route else 1,
+                    -int(payload.get("query_group_hits") or 0),
+                    -float(payload.get("query_group_coverage") or 0.0),
+                    -int(payload.get("work_count") or 0),
+                    str(payload.get("title") or "").casefold(),
                 ),
                 payload,
             )
         )
 
-    ordered = [payload for _, payload in sorted(scored)[: max(1, int(limit))]]
+    remaining_limit = max(0, int(limit) - len(selected_overviews))
+    selected_fine = [payload for _, payload in sorted(reranked_fine)[:remaining_limit]]
+    ordered = selected_overviews + selected_fine
     for rank, payload in enumerate(ordered, start=1):
         payload["rank"] = rank
     return ordered
@@ -249,11 +425,197 @@ def community_summary_counts(conn: sqlite3.Connection) -> dict[str, int]:
         SELECT
           COUNT(*) AS community_summaries,
           SUM(CASE WHEN collection_id IS NULL THEN 1 ELSE 0 END) AS global_community_summaries,
-          SUM(CASE WHEN collection_id IS NOT NULL THEN 1 ELSE 0 END) AS collection_community_summaries
+          SUM(CASE WHEN collection_id IS NOT NULL THEN 1 ELSE 0 END) AS collection_community_summaries,
+          SUM(CASE WHEN community_level = 'overview' THEN 1 ELSE 0 END) AS overview_community_summaries,
+          SUM(CASE WHEN community_level = 'fine' THEN 1 ELSE 0 END) AS fine_community_summaries
         FROM community_summaries
         """
     ).fetchone()
     return {key: int(row[key] or 0) for key in row.keys()} if row is not None else {}
+
+
+def _build_overview_descriptors(
+    conn: sqlite3.Connection,
+    *,
+    collection_id: int | None,
+    scope_name: str,
+    work_map: dict[int, dict[str, Any]],
+    edge_map: dict[tuple[int, int], dict[str, Any]],
+    descriptors: list[dict[str, Any]],
+    representative_limit: int,
+    min_edge_weight: float,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    if len(descriptors) < 2:
+        return ([], {})
+
+    member_index: dict[int, int] = {}
+    for index, descriptor in enumerate(descriptors):
+        descriptor["summary_id"] = _summary_id(scope_name=scope_name, community_key=str(descriptor["community_key"]))
+        for work_id in list(descriptor.get("member_ids") or []):
+            member_index[int(work_id)] = index
+
+    cross_edges: dict[tuple[int, int], dict[str, Any]] = {}
+    for (left, right), payload in edge_map.items():
+        if float(payload.get("weight") or 0.0) < float(min_edge_weight):
+            continue
+        left_index = member_index.get(int(left))
+        right_index = member_index.get(int(right))
+        if left_index is None or right_index is None or left_index == right_index:
+            continue
+        edge_key = (left_index, right_index) if left_index < right_index else (right_index, left_index)
+        pair_payload = cross_edges.setdefault(edge_key, {"raw_weight": 0.0, "signals": Counter()})
+        pair_payload["raw_weight"] = float(pair_payload["raw_weight"]) + float(payload.get("weight") or 0.0)
+        pair_payload["signals"].update(dict(payload.get("signals") or {}))
+
+    overview_edge_map: dict[tuple[int, int], dict[str, Any]] = {}
+    descriptor_ids = list(range(len(descriptors)))
+    for left_index, left_descriptor in enumerate(descriptors):
+        for right_index in range(left_index + 1, len(descriptors)):
+            right_descriptor = descriptors[right_index]
+            score, signals = _overview_pair_score(
+                left_descriptor,
+                right_descriptor,
+                cross_payload=cross_edges.get((left_index, right_index)),
+            )
+            if score < OVERVIEW_MIN_EDGE_WEIGHT:
+                continue
+            overview_edge_map[(left_index, right_index)] = {
+                "weight": round(score, 6),
+                "signals": Counter(signals),
+            }
+
+    overview_components = _build_components(
+        work_ids=descriptor_ids,
+        edge_map=overview_edge_map,
+        min_edge_weight=OVERVIEW_MIN_EDGE_WEIGHT,
+    )
+    if not overview_components:
+        return ([], {})
+
+    overview_descriptors: list[dict[str, Any]] = []
+    parent_map: dict[str, str] = {}
+    for component in overview_components:
+        child_descriptors = [descriptors[index] for index in component]
+        member_ids = sorted(
+            {
+                int(work_id)
+                for descriptor in child_descriptors
+                for work_id in list(descriptor.get("member_ids") or [])
+            }
+        )
+        if len(member_ids) < 2:
+            continue
+        child_summary_ids = [str(descriptor["summary_id"]) for descriptor in child_descriptors]
+        representative_works = _representative_works(
+            work_map=work_map,
+            edge_map=edge_map,
+            member_ids=member_ids,
+            min_edge_weight=min_edge_weight,
+            limit=representative_limit,
+        )
+        edge_stats = _community_edge_stats(
+            edge_map=edge_map,
+            member_ids=member_ids,
+            min_edge_weight=min_edge_weight,
+        )
+        top_collaborations = _top_collaboration_counts(conn, work_ids=member_ids)
+        top_topics = _top_topic_counts(conn, work_ids=member_ids)
+        top_results = _top_value_counts(conn, table="result_objects", field="result_kind", work_ids=member_ids)
+        top_methods = _top_value_counts(conn, table="method_objects", field="method_family", work_ids=member_ids)
+        label = _community_label(
+            representative_works=representative_works,
+            collaborations=top_collaborations,
+            topics=top_topics,
+            result_kinds=top_results,
+            method_families=top_methods,
+        )
+        community_key = f"overview_{_group_key(child_summary_ids)}"
+        summary_id = _summary_id(scope_name=scope_name, community_key=community_key)
+        for child_summary_id in child_summary_ids:
+            parent_map[child_summary_id] = summary_id
+        overview_descriptors.append(
+            {
+                "summary_id": summary_id,
+                "community_key": community_key,
+                "member_ids": member_ids,
+                "label": label,
+                "work_count": len(member_ids),
+                "edge_count": int(edge_stats["edge_count"]),
+                "representative_works": representative_works,
+                "signal_mix": list(edge_stats["signal_mix"]),
+                "collaborations": top_collaborations,
+                "topics": top_topics,
+                "result_kinds": top_results,
+                "method_families": top_methods,
+                "child_summary_ids": child_summary_ids,
+                "child_labels": [str(descriptor["label"]) for descriptor in child_descriptors[:4]],
+                "source_refs": [*child_summary_ids[:4], *[f"work:{work_id}" for work_id in member_ids[:4]]],
+            }
+        )
+    return (overview_descriptors, parent_map)
+
+
+def _overview_pair_score(
+    left_descriptor: dict[str, Any],
+    right_descriptor: dict[str, Any],
+    *,
+    cross_payload: dict[str, Any] | None,
+) -> tuple[float, Counter]:
+    score = 0.0
+    signals = Counter()
+    if cross_payload is not None:
+        left_size = max(1, len(list(left_descriptor.get("member_ids") or [])))
+        right_size = max(1, len(list(right_descriptor.get("member_ids") or [])))
+        normalized = float(cross_payload.get("raw_weight") or 0.0) / max(1.0, math.sqrt(left_size * right_size))
+        contribution = min(OVERVIEW_CROSS_EDGE_CAP, normalized * 0.22)
+        if contribution > 0:
+            score += contribution
+            signals["cross_edge"] += 1
+            signals.update(dict(cross_payload.get("signals") or {}))
+    score += _shared_signal_contribution(
+        left_descriptor.get("topics"),
+        right_descriptor.get("topics"),
+        weight=OVERVIEW_TOPIC_WEIGHT,
+        signal_name="shared_topic",
+        signals=signals,
+    )
+    score += _shared_signal_contribution(
+        left_descriptor.get("result_kinds"),
+        right_descriptor.get("result_kinds"),
+        weight=OVERVIEW_RESULT_WEIGHT,
+        signal_name="shared_result",
+        signals=signals,
+    )
+    score += _shared_signal_contribution(
+        left_descriptor.get("method_families"),
+        right_descriptor.get("method_families"),
+        weight=OVERVIEW_METHOD_WEIGHT,
+        signal_name="shared_method",
+        signals=signals,
+    )
+    score += _shared_signal_contribution(
+        left_descriptor.get("collaborations"),
+        right_descriptor.get("collaborations"),
+        weight=OVERVIEW_COLLABORATION_WEIGHT,
+        signal_name="shared_collaboration",
+        signals=signals,
+    )
+    return (score, signals)
+
+
+def _shared_signal_contribution(
+    left_values: Any,
+    right_values: Any,
+    *,
+    weight: float,
+    signal_name: str,
+    signals: Counter,
+) -> float:
+    shared = _count_label_set(left_values) & _count_label_set(right_values)
+    if not shared:
+        return 0.0
+    signals[signal_name] += len(shared)
+    return float(weight)
 
 
 def _aggregate_edges(
@@ -631,6 +993,7 @@ def _community_label(
 def _compose_summary_text(
     *,
     label: str,
+    community_level: str,
     work_count: int,
     edge_count: int,
     representative_works: list[dict[str, Any]],
@@ -639,8 +1002,14 @@ def _compose_summary_text(
     topics: list[str],
     result_kinds: list[str],
     method_families: list[str],
+    child_labels: list[str] | None = None,
+    parent_label: str | None = None,
 ) -> str:
-    parts = [label, f"works={work_count}", f"edges={edge_count}"]
+    parts = [label, f"level={community_level}", f"works={work_count}", f"edges={edge_count}"]
+    if parent_label:
+        parts.append(f"parent: {parent_label}")
+    if child_labels:
+        parts.append("child communities: " + "; ".join(child_labels[:3]))
     if signal_mix:
         parts.append("signals: " + ", ".join(signal_mix[:5]))
     if representative_works:
@@ -668,6 +1037,10 @@ def _summary_payload(
     scope_name: str,
     collection_id: int | None,
     community_key: str,
+    community_level: str,
+    parent_summary_id: str | None,
+    child_summary_ids: list[str],
+    lineage: list[str],
     label: str,
     summary_text: str,
     work_count: int,
@@ -681,11 +1054,15 @@ def _summary_payload(
         "collection_id": collection_id,
         "community_key": community_key,
         "algorithm": ALGORITHM,
+        "community_level": community_level,
+        "parent_summary_id": parent_summary_id,
         "label": label,
         "summary_text": summary_text,
         "status": "ready",
         "work_count": int(work_count),
         "edge_count": int(edge_count),
+        "child_summary_ids_json": json.dumps(child_summary_ids, ensure_ascii=False),
+        "lineage_json": json.dumps(lineage, ensure_ascii=False),
         "representative_works_json": json.dumps(representative_works, ensure_ascii=False),
         "source_refs_json": json.dumps(source_refs, ensure_ascii=False),
         "metadata_json": json.dumps(metadata, ensure_ascii=False),
@@ -696,18 +1073,23 @@ def _upsert_community_summary(conn: sqlite3.Connection, payload: dict[str, Any])
     conn.execute(
         """
         INSERT INTO community_summaries (
-          summary_id, collection_id, community_key, algorithm, label, summary_text, status,
-          work_count, edge_count, representative_works_json, source_refs_json, metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          summary_id, collection_id, community_key, algorithm, community_level, parent_summary_id,
+          label, summary_text, status, work_count, edge_count, child_summary_ids_json, lineage_json,
+          representative_works_json, source_refs_json, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(summary_id) DO UPDATE SET
           collection_id = excluded.collection_id,
           community_key = excluded.community_key,
           algorithm = excluded.algorithm,
+          community_level = excluded.community_level,
+          parent_summary_id = excluded.parent_summary_id,
           label = excluded.label,
           summary_text = excluded.summary_text,
           status = excluded.status,
           work_count = excluded.work_count,
           edge_count = excluded.edge_count,
+          child_summary_ids_json = excluded.child_summary_ids_json,
+          lineage_json = excluded.lineage_json,
           representative_works_json = excluded.representative_works_json,
           source_refs_json = excluded.source_refs_json,
           metadata_json = excluded.metadata_json,
@@ -718,11 +1100,15 @@ def _upsert_community_summary(conn: sqlite3.Connection, payload: dict[str, Any])
             payload["collection_id"],
             payload["community_key"],
             payload["algorithm"],
+            payload["community_level"],
+            payload["parent_summary_id"],
             payload["label"],
             payload["summary_text"],
             payload["status"],
             payload["work_count"],
             payload["edge_count"],
+            payload["child_summary_ids_json"],
+            payload["lineage_json"],
             payload["representative_works_json"],
             payload["source_refs_json"],
             payload["metadata_json"],
@@ -744,26 +1130,51 @@ def _scope_summary_count(conn: sqlite3.Connection, *, collection: str | None) ->
     return int(row["n"] or 0) if row is not None else 0
 
 
+def _scope_has_stale_algorithm(conn: sqlite3.Connection, *, collection: str | None) -> bool:
+    if collection:
+        collection_id = _collection_id(conn, collection)
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS stale
+            FROM community_summaries
+            WHERE collection_id = ? AND algorithm <> ?
+            """,
+            (collection_id, ALGORITHM),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS stale
+            FROM community_summaries
+            WHERE collection_id IS NULL AND algorithm <> ?
+            """,
+            (ALGORITHM,),
+        ).fetchone()
+    return bool(int(row["stale"] or 0)) if row is not None else False
+
+
 def _load_scope_rows(conn: sqlite3.Connection, *, collection: str | None) -> list[sqlite3.Row]:
     if collection:
         collection_id = _collection_id(conn, collection)
         return conn.execute(
             """
-            SELECT summary_id, algorithm, label, summary_text, status,
-                   work_count, edge_count, representative_works_json, source_refs_json, metadata_json
+            SELECT summary_id, algorithm, community_level, parent_summary_id, label, summary_text, status,
+                   work_count, edge_count, child_summary_ids_json, lineage_json,
+                   representative_works_json, source_refs_json, metadata_json
             FROM community_summaries
             WHERE collection_id = ?
-            ORDER BY work_count DESC, edge_count DESC, label
+            ORDER BY CASE community_level WHEN 'overview' THEN 0 ELSE 1 END, work_count DESC, edge_count DESC, label
             """,
             (collection_id,),
         ).fetchall()
     return conn.execute(
         """
-        SELECT summary_id, algorithm, label, summary_text, status,
-               work_count, edge_count, representative_works_json, source_refs_json, metadata_json
+        SELECT summary_id, algorithm, community_level, parent_summary_id, label, summary_text, status,
+               work_count, edge_count, child_summary_ids_json, lineage_json,
+               representative_works_json, source_refs_json, metadata_json
         FROM community_summaries
         WHERE collection_id IS NULL
-        ORDER BY work_count DESC, edge_count DESC, label
+        ORDER BY CASE community_level WHEN 'overview' THEN 0 ELSE 1 END, work_count DESC, edge_count DESC, label
         """
     ).fetchall()
 
@@ -877,8 +1288,7 @@ def _top_value_counts(
 
 
 def _community_key(member_ids: list[int]) -> str:
-    digest = hashlib.sha1(",".join(str(int(work_id)) for work_id in sorted(member_ids)).encode("utf-8")).hexdigest()
-    return digest[:16]
+    return _group_key([str(int(work_id)) for work_id in sorted(member_ids)])
 
 
 def _summary_id(*, scope_name: str, community_key: str) -> str:
@@ -887,6 +1297,38 @@ def _summary_id(*, scope_name: str, community_key: str) -> str:
 
 def _count_label(value: str) -> str:
     return str(value or "").split("=", 1)[0].strip()
+
+
+def _count_label_set(values: Any) -> set[str]:
+    return {
+        _count_label(str(item))
+        for item in list(values or [])
+        if _count_label(str(item))
+    }
+
+
+def _group_key(values: list[str]) -> str:
+    digest = hashlib.sha1(",".join(sorted(str(value) for value in values)).encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def _parent_label_from_descriptors(
+    descriptors: list[dict[str, Any]],
+    *,
+    parent_summary_id: str | None,
+    scope_name: str,
+) -> str | None:
+    if not parent_summary_id:
+        return None
+    for descriptor in descriptors:
+        descriptor_summary_id = str(
+            descriptor.get("summary_id")
+            or _summary_id(scope_name=scope_name, community_key=str(descriptor.get("community_key") or ""))
+        )
+        if descriptor_summary_id == parent_summary_id:
+            label = str(descriptor.get("label") or "").strip()
+            return label or None
+    return None
 
 
 def _safe_key(value: str) -> str:

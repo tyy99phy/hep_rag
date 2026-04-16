@@ -24,7 +24,8 @@ class RetrievalShellTests(unittest.TestCase):
             "community_summaries": [
                 {
                     "summary_id": "community_summary:all:community:ssww_cluster",
-                    "algorithm": "weighted_components_v1",
+                    "algorithm": "weighted_components_hierarchy_v1",
+                    "community_level": "overview",
                     "label": "CMS / same sign ww community",
                     "summary_text": "Community around CMS same-sign WW measurements and related VBS papers.",
                     "work_count": 3,

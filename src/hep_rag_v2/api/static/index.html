@@ -957,6 +957,7 @@
       const ontology = Array.isArray(data.evidence?.ontology_summaries) ? data.evidence.ontology_summaries : [];
       const works = Array.isArray(data.evidence?.works) ? data.evidence.works : [];
       const chunks = Array.isArray(data.evidence?.chunks) ? data.evidence.chunks : [];
+      const mapNotes = Array.isArray(data.community_map_notes) ? data.community_map_notes : [];
       const scope = normalizeSearchScopePayload(data.search_scope, data.collection);
       return [
         `<div class="result-section">`,
@@ -964,8 +965,10 @@
         `<div class="result-meta">`,
         badge(`Scope ${escapeHtml(scope.label)}`),
         badge(`Mode ${escapeHtml(data.mode || "answer")}`),
+        badge(`Strategy ${escapeHtml(data.answer_strategy || "single_pass")}`),
         badge(`Model ${escapeHtml(data.llm_model || data.llm_backend || "unknown")}`),
         badge(`Communities ${communities.length}`),
+        badge(`Map Notes ${mapNotes.length}`),
         badge(`Ontology ${ontology.length}`),
         badge(`Works ${works.length}`),
         badge(`Chunks ${chunks.length}`),
@@ -978,7 +981,20 @@
         `<div class="evidence-overview">`,
         `<div class="result-note">Paper-level evidence gives the document identity and coarse context. Chunk-level evidence carries the fine-grained passage text that should support the answer.</div>`,
         `<div class="result-note">Community summaries capture graph-level clusters. Ontology summaries capture typed substrate. Answer citations are clickable and will scroll to the matching community, ontology, work, or chunk evidence.</div>`,
+        mapNotes.length ? `<div class="result-note">This answer used community map-reduce. The notes below are intermediate community-level syntheses, not standalone evidence.</div>` : ``,
         `</div>`,
+        `</div>`,
+        `<div class="result-section">`,
+        `<h3>Community Map Notes</h3>`,
+        mapNotes.length
+          ? `<div class="result-list">${mapNotes.map((item, index) => `
+              <div class="result-card">
+                <div class="result-card-title">${escapeHtml(item.label || `Map note ${index + 1}`)}</div>
+                <div class="result-card-subtitle">${escapeHtml(item.community_level || "community")} · ${escapeHtml((item.source_refs || []).join(", ") || "no refs")}</div>
+                <div class="result-card-copy">${renderMarkdown(String(item.content || ""))}</div>
+              </div>
+            `).join("")}</div>`
+          : `<div class="result-note">No community map notes were generated for this answer.</div>`,
         `</div>`,
         `<div class="result-section">`,
         `<h3>Evidence Community Summaries</h3>`,
@@ -1160,13 +1176,14 @@
       return `
         <div${evidenceAttrs}>
           <div class="result-card-title">${escapeHtml(item.label || item.title || "Community summary")}</div>
-          <div class="result-card-subtitle">${escapeHtml(item.algorithm || "community_summary")}</div>
+          <div class="result-card-subtitle">${escapeHtml(item.algorithm || "community_summary")} · ${escapeHtml(item.community_level || "fine")}</div>
           <div class="result-card-meta">
             ${evidenceRef ? badge(`Ref ${escapeHtml(evidenceRef)}`) : ``}
             ${badge(`Rank ${item.rank ?? "-"}`)}
             ${badge(`Score ${formatScore(item.hybrid_score)}`)}
             ${badge(`Works ${item.work_count ?? 0}`)}
             ${badge(`Edges ${item.edge_count ?? 0}`)}
+            ${item.parent_summary_id ? badge(`Parent linked`) : ``}
           </div>
           ${signalMix.length ? `<div class="result-card-subtitle">${escapeHtml(signalMix.slice(0, 4).join(" | "))}</div>` : ``}
           <div class="result-card-copy">${escapeHtml(summaryText)}</div>
