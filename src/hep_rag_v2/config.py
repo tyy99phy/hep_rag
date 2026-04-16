@@ -177,7 +177,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "profile": "default",
         "source_id": "pdg",
         "title": "Particle Data Group",
-        "default_artifact": "full",
+        "default_artifact": "website",
         "sqlite_variant": "all",
         "register_embedded_pdfs": True,
         "max_capsule_chars": 1200,

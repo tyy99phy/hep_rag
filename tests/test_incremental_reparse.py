@@ -95,8 +95,8 @@ class IncrementalReparseTests(unittest.TestCase):
                     conn.execute(
                         """
                         INSERT INTO works (canonical_source, canonical_id, title)
-                        VALUES ('pdg', 'pdg-2024-book-pdf', 'PDG Book'),
-                               ('pdg', 'pdg-2024-listings-z-boson', 'Z Boson Listing')
+                        VALUES ('pdg', 'pdg-2024-listings-z-boson', 'Z Boson Listing'),
+                               ('pdg', 'pdg-2024-listings-w-boson', 'W Boson Listing')
                         """
                     )
                     conn.execute(
@@ -105,23 +105,23 @@ class IncrementalReparseTests(unittest.TestCase):
                     )
                     pdf_dir = paths.PDF_DIR / "pdg"
                     pdf_dir.mkdir(parents=True, exist_ok=True)
-                    (pdf_dir / "pdg-2024-book-pdf.pdf").write_bytes(b"%PDF-1.4\n")
                     (pdf_dir / "pdg-2024-listings-z-boson.pdf").write_bytes(b"%PDF-1.4\n")
-                    conn.execute(
-                        """
-                        INSERT INTO documents (
-                          work_id, parser_name, parser_version, parse_status, parsed_dir, manifest_path
-                        ) VALUES (?, 'pdg_book_pdf', '2024', 'pdf_ready', ?, NULL)
-                        """,
-                        (1, str(paths.PARSED_DIR / "pdg" / "pdg-2024-book-pdf")),
-                    )
+                    (pdf_dir / "pdg-2024-listings-w-boson.pdf").write_bytes(b"%PDF-1.4\n")
                     conn.execute(
                         """
                         INSERT INTO documents (
                           work_id, parser_name, parser_version, parse_status, parsed_dir, manifest_path
                         ) VALUES (?, 'pdg_website_pdf', '2024', 'pdf_ready', ?, NULL)
                         """,
-                        (2, str(paths.PARSED_DIR / "pdg" / "pdg-2024-listings-z-boson")),
+                        (1, str(paths.PARSED_DIR / "pdg" / "pdg-2024-listings-z-boson")),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO documents (
+                          work_id, parser_name, parser_version, parse_status, parsed_dir, manifest_path
+                        ) VALUES (?, 'mineru', 'v2-contract', 'pdf_ready', ?, NULL)
+                        """,
+                        (2, str(paths.PARSED_DIR / "pdg" / "pdg-2024-listings-w-boson")),
                     )
 
                     candidates = _select_reparse_candidates(
@@ -129,13 +129,13 @@ class IncrementalReparseTests(unittest.TestCase):
                         collection_name="pdg",
                         limit=None,
                         work_ids=None,
-                        parser_name="pdg_book_pdf",
+                        parser_name="pdg_website_pdf",
                         replace_existing=False,
                     )
 
                 self.assertEqual(len(candidates), 1)
                 self.assertEqual(candidates[0]["work_id"], 1)
-                self.assertEqual(candidates[0]["parser_name"], "pdg_book_pdf")
+                self.assertEqual(candidates[0]["parser_name"], "pdg_website_pdf")
         finally:
             paths.set_workspace_root(original_root)
 

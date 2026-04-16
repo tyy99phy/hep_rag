@@ -20,7 +20,7 @@ from hep_rag_v2.physics import build_physics_substrate
 from hep_rag_v2.results import build_result_objects
 from hep_rag_v2.structure import build_work_structures
 from hep_rag_v2.transfer import build_transfer_candidates
-from hep_rag_v2.pdg import import_pdg_website_source, register_pdg_artifact
+from hep_rag_v2.pdg import ensure_pdg_schema, import_pdg_website_source, register_pdg_artifact
 from hep_rag_v2.metadata import (
     canonical_identity,
     first_arxiv_id,
@@ -580,7 +580,6 @@ def import_pdg(
     collection_name: str | None = None,
     artifact: str | None = None,
     source_path: str | Path | None = None,
-    pdf_path: str | Path | None = None,
     download: bool = False,
     progress: ProgressCallback = None,
 ) -> dict[str, Any]:
@@ -588,16 +587,16 @@ def import_pdg(
     resolved_collection = str(collection_name or (config.get("collection") or {}).get("name") or "pdg").strip() or "pdg"
     workspace = initialize_workspace(config, collection_name=resolved_collection)
     pdg_cfg = config.get("pdg") or {}
-    resolved_artifact = normalize_pdg_artifact(str(artifact or pdg_cfg.get("default_artifact") or "full"))
+    resolved_artifact = normalize_pdg_artifact(str(artifact or pdg_cfg.get("default_artifact") or "website"))
     resolved_sqlite_variant = normalize_pdg_sqlite_variant(str(pdg_cfg.get("sqlite_variant") or "all"))
     references = resolve_pdg_references(
         edition=edition,
         artifact=resolved_artifact,
         sqlite_variant=resolved_sqlite_variant,
     )
-    local_source = source_path or pdf_path
+    local_source = source_path
     if local_source is not None and len(references) != 1:
-        raise ValueError("A local --source/--pdf path can only be used when importing a single PDG artifact.")
+        raise ValueError("A local --source path can only be used when importing a single PDG artifact.")
 
     _emit_progress(progress, f"preparing PDG import for artifact={resolved_artifact}...")
     summary = {
@@ -608,11 +607,12 @@ def import_pdg(
         "references": references,
         "staged_artifacts": [],
         "website_import": None,
-        "registered_primary_pdfs": [],
         "registered_embedded_pdfs": None,
+        "cleanup": None,
     }
     with connect() as conn:
         collection_id = int(workspace["collection"]["collection_id"])
+        summary["cleanup"] = _remove_deprecated_pdg_pdf_material(conn)
         for reference in references:
             artifact_kind = str(reference.get("artifact_kind") or "").strip()
             output_path = _pdg_artifact_output_path(reference=reference, collection_name=resolved_collection)
@@ -668,17 +668,6 @@ def import_pdg(
                     )
                     item["embedded_pdfs"] = pdf_registration
                     summary["registered_embedded_pdfs"] = pdf_registration
-            elif artifact_kind in {"book_pdf", "booklet_pdf"} and bool(staged.get("ok")):
-                pdf_registration = _register_pdg_primary_pdf_artifact(
-                    conn,
-                    collection_id=collection_id,
-                    collection_name=resolved_collection,
-                    reference=reference,
-                    source_path=Path(str(staged["path"])),
-                    progress=progress,
-                )
-                item["primary_pdf"] = pdf_registration
-                summary["registered_primary_pdfs"].append(pdf_registration)
             summary["staged_artifacts"].append(item)
         summary["snapshot"] = _snapshot(conn)
     return summary
@@ -690,41 +679,67 @@ def _pdg_artifact_output_path(*, reference: dict[str, Any], collection_name: str
     return paths.RAW_DIR / "pdg" / artifact_kind / file_name
 
 
-def _register_pdg_primary_pdf_artifact(
-    conn: sqlite3.Connection,
-    *,
-    collection_id: int,
-    collection_name: str,
-    reference: dict[str, Any],
-    source_path: Path,
-    progress: ProgressCallback = None,
-) -> dict[str, Any]:
-    artifact_kind = str(reference.get("artifact_kind") or "").strip() or "pdg_pdf"
-    work_id = _upsert_archival_work(conn, collection_id=collection_id, reference=reference)
-    stem = paper_storage_stem(conn, work_id)
-    output_path = paths.PDF_DIR / collection_name / f"{stem}.pdf"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    resolved_source = source_path.expanduser().resolve()
-    if output_path.resolve() != resolved_source:
-        shutil.copy2(resolved_source, output_path)
-    document = _upsert_archival_document_record(
-        conn,
-        work_id=work_id,
-        collection_name=collection_name,
-        stem=stem,
-        parser_name=f"pdg_{artifact_kind}",
-        parser_version=str(reference.get("edition") or ""),
-        parse_status="pdf_ready",
-        parse_error=None,
-    )
-    _emit_progress(progress, f"registered PDG {artifact_kind} parse candidate: work_id={work_id} path={output_path.name}")
+def _remove_deprecated_pdg_pdf_material(conn: sqlite3.Connection) -> dict[str, Any]:
+    ensure_pdg_schema(conn)
+    artifact_rows = conn.execute(
+        """
+        SELECT artifact_id, local_path
+        FROM pdg_artifacts
+        WHERE artifact_kind IN ('book_pdf', 'booklet_pdf')
+        """
+    ).fetchall()
+    work_rows = conn.execute(
+        """
+        SELECT w.work_id, w.canonical_id, d.parsed_dir
+        FROM works w
+        LEFT JOIN documents d ON d.work_id = w.work_id
+        WHERE w.canonical_source = 'pdg'
+          AND (
+            w.canonical_id LIKE 'pdg-%-book-pdf'
+            OR w.canonical_id LIKE 'pdg-%-booklet-pdf'
+          )
+        """
+    ).fetchall()
+
+    removed_paths: list[str] = []
+    removed_artifact_ids = [int(row["artifact_id"]) for row in artifact_rows]
+    removed_work_ids = [int(row["work_id"]) for row in work_rows]
+
+    for row in artifact_rows:
+        local_path = str(row["local_path"] or "").strip()
+        if local_path:
+            path = Path(local_path).expanduser()
+            if path.exists():
+                path.unlink(missing_ok=True)
+                removed_paths.append(str(path))
+
+    for row in work_rows:
+        canonical_id = str(row["canonical_id"] or "").strip()
+        if canonical_id:
+            stem = safe_stem(canonical_id)
+            for pdf_path in paths.PDF_DIR.rglob(f"{stem}.pdf"):
+                if pdf_path.exists():
+                    pdf_path.unlink(missing_ok=True)
+                    removed_paths.append(str(pdf_path))
+        parsed_dir = str(row["parsed_dir"] or "").strip()
+        if parsed_dir:
+            path = Path(parsed_dir).expanduser()
+            if path.exists():
+                shutil.rmtree(path, ignore_errors=True)
+                removed_paths.append(str(path))
+
+    if removed_artifact_ids:
+        placeholders = ",".join("?" for _ in removed_artifact_ids)
+        conn.execute(f"DELETE FROM pdg_artifacts WHERE artifact_id IN ({placeholders})", removed_artifact_ids)
+
+    if removed_work_ids:
+        placeholders = ",".join("?" for _ in removed_work_ids)
+        conn.execute(f"DELETE FROM works WHERE work_id IN ({placeholders})", removed_work_ids)
+
     return {
-        "work_id": work_id,
-        "canonical_id": str(reference.get("canonical_id") or ""),
-        "title": str(reference.get("title") or ""),
-        "artifact_kind": artifact_kind,
-        "path": str(output_path),
-        "document": document,
+        "removed_artifacts": len(removed_artifact_ids),
+        "removed_works": len(removed_work_ids),
+        "removed_paths": sorted(set(removed_paths)),
     }
 
 

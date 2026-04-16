@@ -84,20 +84,19 @@ hep-rag ingest-online "rare decay eta to four muons CMS" \
   --config ./hep-rag.yaml --limit 10 --download-limit 10 --parse-limit 10
 
 # 4b. 导入 PDG 主干语料
-# full 会分层处理官方 artifact：
-#   - website -> 导入 pdg_sections，并注册 600+ 内嵌 review/listing/table PDFs
-#   - book_pdf / booklet_pdf -> 注册成可直接 reparse 的 PDG 主干文档
-#   - sqlite -> 归档到 workspace，供后续 physics substrate / ontology 扩展
+# 默认只走 website 路线：
+#   - 导入 pdg_sections
+#   - 注册 600+ 内嵌 review/listing/table PDFs
 hep-rag import-pdg --config ./hep-rag.yaml --collection pdg --edition 2024 --download
 
-# 4b-alt. 只导入 PDG website corpus（本地 zip/目录也可通过 --source 指定）
-hep-rag import-pdg --config ./hep-rag.yaml --collection pdg --edition 2024 --artifact website --download
+# 4b-alt. 如需同时归档 SQLite（不引入 standalone book PDF）
+hep-rag import-pdg --config ./hep-rag.yaml --collection pdg --edition 2024 --artifact full --download
 
-# 4c. 让 PDG 主干 PDF 进入 MinerU / structure 链路
+# 4c. 让 PDG website 内嵌 PDF 进入 MinerU / structure 链路
 hep-rag reparse-pdfs --config ./hep-rag.yaml --collection pdg --limit 4
 
-# 4c-alt. 只先解析 PDG 大书本体，不扫 website 内嵌 PDFs
-hep-rag reparse-pdfs --config ./hep-rag.yaml --collection pdg --parser-name pdg_book_pdf
+# 4c-alt. 只解析 website 注册的 PDG PDF，不碰其他 parser
+hep-rag reparse-pdfs --config ./hep-rag.yaml --collection pdg --parser-name pdg_website_pdf
 
 # 5. 检索（不调用 LLM）
 hep-rag query "eta meson rare decay branching fraction" \
@@ -131,7 +130,7 @@ mineru:
   max_pages_per_pdf: 200             # 当前 MinerU API 单次解析页数上限
 
 pdg:
-  default_artifact: full             # 默认导入 website + sqlite + book_pdf + booklet_pdf
+  default_artifact: website          # 默认只导入 website corpus
   sqlite_variant: all                # 下载带历史 Summary Table 数据的 SQLite 版本
   register_embedded_pdfs: true       # 将 website 内嵌 review/listing/table PDFs 注册为正式 parse candidates
 

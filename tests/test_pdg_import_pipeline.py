@@ -38,9 +38,9 @@ class PdgImportPipelineTests(unittest.TestCase):
     def test_resolve_pdg_references_full_profile_expands_official_assets(self) -> None:
         refs = resolve_pdg_references(edition="2024", artifact="full", sqlite_variant="all")
 
-        self.assertEqual([item["artifact_kind"] for item in refs], ["website", "sqlite", "book_pdf", "booklet_pdf"])
+        self.assertEqual([item["artifact_kind"] for item in refs], ["website", "sqlite"])
         self.assertTrue(any(str(item.get("file_name")).endswith(".sqlite") for item in refs))
-        self.assertTrue(any(str(item.get("file_name")).endswith(".pdf") for item in refs))
+        self.assertTrue(any(str(item.get("file_name")).endswith(".zip") for item in refs))
 
     def test_import_pdg_with_local_website_bundle_materializes_sections(self) -> None:
         original_root = paths.workspace_root()
@@ -62,11 +62,12 @@ class PdgImportPipelineTests(unittest.TestCase):
                     self.assertEqual(payload["artifact"], "website")
                     self.assertIsNotNone(payload["website_import"])
                     self.assertIsNotNone(payload["registered_embedded_pdfs"])
-                    self.assertEqual(payload["registered_primary_pdfs"], [])
                     self.assertEqual(len(payload["staged_artifacts"]), 1)
                     self.assertEqual(payload["staged_artifacts"][0]["artifact"]["state"], "copied")
                     self.assertGreater(payload["website_import"]["capsule_count"], 0)
                     self.assertEqual(payload["registered_embedded_pdfs"]["registered"], 2)
+                    self.assertEqual(payload["cleanup"]["removed_artifacts"], 0)
+                    self.assertEqual(payload["cleanup"]["removed_works"], 0)
 
                     with db.connect() as conn:
                         source_row = conn.execute(
@@ -140,7 +141,6 @@ class PdgImportPipelineTests(unittest.TestCase):
                 payload = json.loads(out.getvalue())
                 self.assertEqual(payload["artifact"], "website")
                 self.assertIsNotNone(payload["website_import"])
-                self.assertEqual(payload["registered_primary_pdfs"], [])
                 self.assertEqual(payload["registered_embedded_pdfs"]["registered"], 2)
                 self.assertEqual(payload["staged_artifacts"][0]["artifact"]["state"], "copied")
         finally:
@@ -208,54 +208,84 @@ class PdgImportPipelineTests(unittest.TestCase):
         finally:
             paths.set_workspace_root(original_root)
 
-    def test_import_pdg_book_pdf_registers_parse_candidate(self) -> None:
+    def test_import_pdg_prunes_deprecated_book_pdf_records(self) -> None:
         original_root = paths.workspace_root()
         try:
             with tempfile.TemporaryDirectory() as td:
                 tmp = Path(td)
-                source_pdf = tmp / "pdg-book.pdf"
-                source_pdf.write_bytes(b"%PDF-1.4\n% fake PDG book pdf\n")
+                source_zip = _make_pdg_website_zip(tmp)
 
                 with _patch_workspace(tmp):
                     config = default_config(workspace_root=tmp)
+                    db.ensure_db()
+                    from hep_rag_v2.metadata import upsert_collection
+                    from hep_rag_v2.pdg import ensure_pdg_schema
+
+                    with db.connect() as conn:
+                        ensure_pdg_schema(conn)
+                        collection_id = upsert_collection(conn, {"name": "pdg", "label": "PDG"})
+                        conn.execute(
+                            """
+                            INSERT INTO works (canonical_source, canonical_id, title, year)
+                            VALUES ('pdg', 'pdg-2024-book-pdf', 'Legacy PDG Book', 2024)
+                            """
+                        )
+                        conn.execute(
+                            "INSERT INTO work_ids (id_type, id_value, work_id, is_primary) VALUES ('pdg', 'pdg-2024-book-pdf', 1, 1)"
+                        )
+                        conn.execute(
+                            "INSERT INTO collection_works (collection_id, work_id) VALUES (?, 1)",
+                            (collection_id,),
+                        )
+                        parsed_dir = paths.PARSED_DIR / "pdg" / "pdg-2024-book-pdf"
+                        parsed_dir.mkdir(parents=True, exist_ok=True)
+                        (parsed_dir / "manifest.json").write_text("{}", encoding="utf-8")
+                        pdf_path = paths.PDF_DIR / "pdg" / "pdg-2024-book-pdf.pdf"
+                        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+                        pdf_path.write_bytes(b"%PDF-1.4\n")
+                        raw_path = paths.RAW_DIR / "pdg" / "book_pdf" / "PhysRevD.110.030001.pdf"
+                        raw_path.parent.mkdir(parents=True, exist_ok=True)
+                        raw_path.write_bytes(b"%PDF-1.4\n")
+                        conn.execute(
+                            """
+                            INSERT INTO documents (
+                              work_id, parser_name, parser_version, parse_status, parsed_dir, manifest_path
+                            ) VALUES (1, 'pdg_book_pdf', '2024', 'pdf_ready', ?, ?)
+                            """,
+                            (str(parsed_dir), str(parsed_dir / "manifest.json")),
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO pdg_artifacts (
+                              source_id, artifact_kind, edition, title, local_path, file_name
+                            ) VALUES ('pdg-2024-book-pdf', 'book_pdf', '2024', 'Legacy PDG Book', ?, 'PhysRevD.110.030001.pdf')
+                            """,
+                            (str(raw_path),),
+                        )
+
                     payload = import_pdg(
                         config,
                         edition="2024",
-                        artifact="book_pdf",
-                        source_path=source_pdf,
+                        artifact="website",
+                        source_path=source_zip,
                         collection_name="pdg",
                     )
 
-                    self.assertEqual(payload["artifact"], "book_pdf")
-                    self.assertIsNone(payload["website_import"])
-                    self.assertEqual(len(payload["registered_primary_pdfs"]), 1)
-                    primary = payload["registered_primary_pdfs"][0]
-                    self.assertEqual(primary["artifact_kind"], "book_pdf")
-                    self.assertTrue(primary["path"].endswith("pdg-2024-book-pdf.pdf"))
-                    self.assertTrue(payload["staged_artifacts"][0]["artifact"]["path"].endswith("PhysRevD.110.030001.pdf"))
+                    self.assertEqual(payload["cleanup"]["removed_artifacts"], 1)
+                    self.assertEqual(payload["cleanup"]["removed_works"], 1)
 
                     with db.connect() as conn:
-                        work_row = conn.execute(
-                            "SELECT canonical_id FROM works WHERE work_id = ?",
-                            (int(primary["work_id"]),),
-                        ).fetchone()
-                        self.assertIsNotNone(work_row)
-                        self.assertEqual(work_row["canonical_id"], "pdg-2024-book-pdf")
-
-                        document_row = conn.execute(
-                            "SELECT parse_status FROM documents WHERE work_id = ?",
-                            (int(primary["work_id"]),),
-                        ).fetchone()
-                        self.assertIsNotNone(document_row)
-                        self.assertEqual(document_row["parse_status"], "pdf_ready")
-
                         artifact_row = conn.execute(
-                            "SELECT artifact_kind, local_path FROM pdg_artifacts WHERE source_id = ?",
-                            ("pdg-2024-book-pdf",),
+                            "SELECT 1 FROM pdg_artifacts WHERE artifact_kind = 'book_pdf'"
                         ).fetchone()
-                        self.assertIsNotNone(artifact_row)
-                        self.assertEqual(artifact_row["artifact_kind"], "book_pdf")
-                        self.assertTrue(str(artifact_row["local_path"]).endswith("PhysRevD.110.030001.pdf"))
+                        self.assertIsNone(artifact_row)
+                        work_row = conn.execute(
+                            "SELECT 1 FROM works WHERE canonical_id = 'pdg-2024-book-pdf'"
+                        ).fetchone()
+                        self.assertIsNone(work_row)
+                    self.assertFalse(raw_path.exists())
+                    self.assertFalse(pdf_path.exists())
+                    self.assertFalse(parsed_dir.exists())
         finally:
             paths.set_workspace_root(original_root)
 

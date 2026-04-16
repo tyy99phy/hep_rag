@@ -85,22 +85,22 @@ hep-rag import-pdg \
 - website 内嵌的 review / listing / table PDFs 是否会被注册成正式 parse candidates
 - physics substrate 是否能从 PDG corpus 主干正常构建
 
-如果接着验证官方大书 PDF 是否真正接入框架，而不是只被下载到磁盘上：
+当前框架已经不再引入 standalone `book_pdf` / `booklet_pdf`。PDG 的活跃 PDF 语料只来自 website bundle 内嵌的 `reviews` / `tables` / `listings`。
 
 ```bash
 hep-rag import-pdg \
   --config ./hep-rag.yaml \
   --collection pdg \
   --edition 2024 \
-  --artifact book_pdf \
+  --artifact website \
   --download
 ```
 
 预期行为：
 
-- 原始 `PhysRevD.110.030001.pdf` 会落到 `workspace/data/raw/pdg/book_pdf/`
-- 解析用副本会注册到 `workspace/data/pdfs/pdg/pdg-2024-book-pdf.pdf`
-- `documents.parse_status` 会变成 `pdf_ready`
+- `rpp-2024.zip` 会落到 `workspace/data/raw/pdg/website/`
+- website 内嵌 PDF 会被注册到 `workspace/data/pdfs/pdg/`
+- 对应 `documents.parse_status` 会变成 `pdf_ready`
 
 ## 2. selective fulltext / structure 测试
 

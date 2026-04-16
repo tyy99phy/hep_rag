@@ -7,7 +7,7 @@ from typing import Any, Callable
 import requests
 
 
-PDG_ARTIFACT_CHOICES = ("full", "website", "book_pdf", "booklet_pdf", "sqlite")
+PDG_ARTIFACT_CHOICES = ("full", "website", "sqlite")
 PDG_SQLITE_VARIANTS = ("minimal", "all")
 DEFAULT_PDG_TIMEOUT = 120
 DEFAULT_PDG_RETRIES = 3
@@ -22,20 +22,6 @@ _ARTIFACT_SPECS: dict[str, dict[str, str]] = {
         "landing_url": "https://pdg.lbl.gov/{edition}/index.html",
         "download_url": "https://pdg.lbl.gov/{edition}/download/rpp-{edition}.zip",
         "file_name": "rpp-{edition}.zip",
-    },
-    "book_pdf": {
-        "slug": "book-pdf",
-        "title": "Review of Particle Physics ({edition}) Book PDF",
-        "landing_url": "https://pdg.lbl.gov/{edition}/reviews/contents_sports.html",
-        "download_url": "https://pdg.lbl.gov/{edition}/download/PhysRevD.110.030001.pdf",
-        "file_name": "PhysRevD.110.030001.pdf",
-    },
-    "booklet_pdf": {
-        "slug": "booklet-pdf",
-        "title": "Review of Particle Physics ({edition}) Booklet PDF",
-        "landing_url": "https://pdg.lbl.gov/{edition}/html/booklet.html",
-        "download_url": "https://pdg.lbl.gov/{edition}/download/db{edition}.pdf",
-        "file_name": "db{edition}.pdf",
     },
     "sqlite": {
         "slug": "sqlite",
@@ -56,7 +42,7 @@ def _emit_progress(progress: ProgressCallback, message: str) -> None:
 
 
 def normalize_pdg_artifact(value: str | None) -> str:
-    text = str(value or "full").strip().casefold().replace("-", "_")
+    text = str(value or "website").strip().casefold().replace("-", "_")
     if text not in PDG_ARTIFACT_CHOICES:
         raise ValueError(f"Unsupported PDG artifact: {value}")
     return text
@@ -119,8 +105,6 @@ def resolve_pdg_references(
     return [
         resolve_pdg_reference(edition=normalized_edition, artifact="website"),
         resolve_pdg_reference(edition=normalized_edition, artifact="sqlite", sqlite_variant=normalized_sqlite_variant),
-        resolve_pdg_reference(edition=normalized_edition, artifact="book_pdf"),
-        resolve_pdg_reference(edition=normalized_edition, artifact="booklet_pdf"),
     ]
 
 
@@ -204,36 +188,6 @@ def stage_pdg_artifact(
         "file_name": str(reference.get("file_name") or output_path.name),
         "url": download_url,
     }
-
-
-def stage_pdg_pdf(
-    reference: dict[str, Any],
-    *,
-    output_path: Path,
-    pdf_path: str | Path | None = None,
-    download: bool = False,
-    timeout: int = DEFAULT_PDG_TIMEOUT,
-    retries: int = DEFAULT_PDG_RETRIES,
-    verify_ssl: bool = True,
-    progress: ProgressCallback = None,
-) -> dict[str, Any]:
-    artifact_kind = str(reference.get("artifact_kind") or "").strip()
-    if artifact_kind not in {"book_pdf", "booklet_pdf"}:
-        raise ValueError(f"stage_pdg_pdf only supports PDF artifacts, got: {artifact_kind or 'unknown'}")
-    payload = stage_pdg_artifact(
-        reference,
-        output_path=output_path,
-        source_path=pdf_path,
-        download=download,
-        timeout=timeout,
-        retries=retries,
-        verify_ssl=verify_ssl,
-        progress=progress,
-    )
-    payload["pdf_url"] = str(reference.get("download_url") or "")
-    payload["pdf_name"] = str(reference.get("file_name") or output_path.name)
-    return payload
-
 
 def _resolve_sqlite_reference(edition: str, *, sqlite_variant: str) -> dict[str, Any]:
     normalized_variant = normalize_pdg_sqlite_variant(sqlite_variant)
@@ -336,8 +290,6 @@ def _download_artifact(
 def _looks_like_expected_artifact(artifact_kind: str, content_type: str | None, first_chunk: bytes) -> bool:
     normalized_type = str(content_type or "").strip().casefold()
     head = bytes(first_chunk or b"")
-    if artifact_kind in {"book_pdf", "booklet_pdf"}:
-        return "pdf" in normalized_type or head.startswith(b"%PDF")
     if artifact_kind == "website":
         return "zip" in normalized_type or head.startswith(b"PK\x03\x04")
     if artifact_kind == "sqlite":

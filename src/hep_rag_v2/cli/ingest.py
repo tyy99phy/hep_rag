@@ -149,7 +149,6 @@ def cmd_import_pdg(args: argparse.Namespace) -> None:
                 collection_name=args.collection,
                 artifact=args.artifact,
                 source_path=args.source,
-                pdf_path=args.pdf,
                 download=args.download,
                 progress=emit_cli_status,
             )
