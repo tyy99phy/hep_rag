@@ -65,23 +65,42 @@ hep-rag ingest-online "same sign WW CMS" \
 - work-level 检索是否可用
 - 默认 ingest 路径没有因为结构层接线而退化
 
-## 1.5 PDG archival ingest 骨架冒烟
+## 1.5 PDG corpus 导入冒烟
 
-如果你正在推进 PDG / archival 骨架，而手头已经有本地 PDG PDF，可以先验证入口：
+如果你正在推进 PDG 主干导入，建议优先验证 `website` 或 `full` artifact，而不是先走 booklet PDF：
 
 ```bash
 hep-rag import-pdg \
   --config ./hep-rag.yaml \
   --collection pdg \
   --edition 2024 \
-  --pdf /path/to/pdg-2024.pdf
+  --artifact website \
+  --download
 ```
 
 这一步当前主要验证：
 
-- PDG edition 元数据是否能解析成稳定 canonical id
-- 本地 PDF 是否能进入 workspace PDF 区
-- archival ingest stub / 后续 MinerU 接口路径是否稳定
+- PDG 官方 artifact 元数据是否能解析成稳定 canonical id
+- website zip 是否能落到 workspace，并被导入为 `pdg_sections`
+- website 内嵌的 review / listing / table PDFs 是否会被注册成正式 parse candidates
+- physics substrate 是否能从 PDG corpus 主干正常构建
+
+如果接着验证官方大书 PDF 是否真正接入框架，而不是只被下载到磁盘上：
+
+```bash
+hep-rag import-pdg \
+  --config ./hep-rag.yaml \
+  --collection pdg \
+  --edition 2024 \
+  --artifact book_pdf \
+  --download
+```
+
+预期行为：
+
+- 原始 `PhysRevD.110.030001.pdf` 会落到 `workspace/data/raw/pdg/book_pdf/`
+- 解析用副本会注册到 `workspace/data/pdfs/pdg/pdg-2024-book-pdf.pdf`
+- `documents.parse_status` 会变成 `pdf_ready`
 
 ## 2. selective fulltext / structure 测试
 

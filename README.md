@@ -83,11 +83,21 @@ hep-rag fetch-papers "rare decay eta to four muons CMS" \
 hep-rag ingest-online "rare decay eta to four muons CMS" \
   --config ./hep-rag.yaml --limit 10 --download-limit 10 --parse-limit 10
 
-# 4b. 把本地 PDG PDF 注册进 archival ingest 骨架
-hep-rag import-pdg --config ./hep-rag.yaml --collection pdg --edition 2024 --pdf /path/to/pdg-2024.pdf
+# 4b. 导入 PDG 主干语料
+# full 会分层处理官方 artifact：
+#   - website -> 导入 pdg_sections，并注册 600+ 内嵌 review/listing/table PDFs
+#   - book_pdf / booklet_pdf -> 注册成可直接 reparse 的 PDG 主干文档
+#   - sqlite -> 归档到 workspace，供后续 physics substrate / ontology 扩展
+hep-rag import-pdg --config ./hep-rag.yaml --collection pdg --edition 2024 --download
 
-# 4c. 对本地已有 PDF 做增量 MinerU 重解析，并刷新 structure/downstream lanes
-hep-rag reparse-pdfs --config ./hep-rag.yaml --collection default
+# 4b-alt. 只导入 PDG website corpus（本地 zip/目录也可通过 --source 指定）
+hep-rag import-pdg --config ./hep-rag.yaml --collection pdg --edition 2024 --artifact website --download
+
+# 4c. 让 PDG 主干 PDF 进入 MinerU / structure 链路
+hep-rag reparse-pdfs --config ./hep-rag.yaml --collection pdg --limit 4
+
+# 4c-alt. 只先解析 PDG 大书本体，不扫 website 内嵌 PDFs
+hep-rag reparse-pdfs --config ./hep-rag.yaml --collection pdg --parser-name pdg_book_pdf
 
 # 5. 检索（不调用 LLM）
 hep-rag query "eta meson rare decay branching fraction" \
@@ -117,6 +127,13 @@ mineru:
   enabled: true                      # 开启全文解析
   api_base: https://mineru.net/api/v4
   api_token: "你的 token"
+  oversize_strategy: split           # PDF 超过页数限制时自动分片后再提交 MinerU
+  max_pages_per_pdf: 200             # 当前 MinerU API 单次解析页数上限
+
+pdg:
+  default_artifact: full             # 默认导入 website + sqlite + book_pdf + booklet_pdf
+  sqlite_variant: all                # 下载带历史 Summary Table 数据的 SQLite 版本
+  register_embedded_pdfs: true       # 将 website 内嵌 review/listing/table PDFs 注册为正式 parse candidates
 
 embedding:
   model: hash-idf-v1                 # 内置无依赖模型，或填 sentence-transformers 模型名
@@ -184,6 +201,8 @@ embedding:
 
 如果 `embedding.runtime.device: cuda`，框架现在会先做 CUDA 预检查；一旦本机 `torch` 和 NVIDIA driver 不兼容，会直接失败并提示修复，不再默默回退到 CPU。
 
+`pypdf` 现在是基础依赖的一部分，用于在框架内部处理超页数 PDF 的自动分页；不需要再在仓库外面写脚本手工 split。
+
 `fetch-papers` / `ingest-online` 在在线检索阶段会先做多 query 改写，再对命中结果做 family-aware 去重后截取 top-N；同一 work 的 note / preprint / article 等相关版本会保留在返回结果的 `related_versions` 中。返回结果里还会带 `local_summary` 和 `local_status`，用于标记本地是否已有该 work、PDF 是否已缓存、MinerU 是否已经 materialize。
 
 ## Web / API
@@ -245,7 +264,7 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 | `reparse-pdfs` | 仅对本地已有 PDF 重新提交 MinerU，并刷新 structure/results/methods/transfer |
 | `ingest-metadata` | 仅导入元数据（不下载 PDF） |
 | `import-mineru` | 手动导入 MinerU 解析结果 |
-| `import-pdg` | 注册/暂存 PDG PDF，进入 archival ingest 骨架 |
+| `import-pdg` | 导入 PDG 官方 artifact，并将 website corpus 写入 `pdg_sections` / physics substrate |
 | `enrich-inspire-metadata` | 补全引文、摘要等字段 |
 | `build-search-index` | 重建 BM25 全文索引 |
 | `build-vector-index` | 重建向量索引 |

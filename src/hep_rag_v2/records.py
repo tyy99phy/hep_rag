@@ -11,6 +11,13 @@ def safe_stem(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_") or "paper"
 
 
+def _normalize_storage_id_value(*, id_type: str, id_value: str) -> str:
+    value = str(id_value or "").strip()
+    if str(id_type or "").strip() == "pdg" and value.casefold().endswith(".pdf"):
+        value = value[:-4].rstrip(".")
+    return value
+
+
 def parsed_doc_dir(collection: str, stem: str) -> Path:
     return paths.PARSED_DIR / collection / stem
 
@@ -78,7 +85,7 @@ def paper_storage_stem(conn: sqlite3.Connection, work_id: int) -> str:
         (work_id,),
     ).fetchall()
     for row in id_rows:
-        value = str(row["id_value"]).strip()
+        value = _normalize_storage_id_value(id_type=str(row["id_type"] or ""), id_value=str(row["id_value"] or ""))
         if value:
             return safe_stem(value)
 
@@ -87,5 +94,5 @@ def paper_storage_stem(conn: sqlite3.Connection, work_id: int) -> str:
         (work_id,),
     ).fetchone()
     if row is not None and str(row["canonical_id"]).strip():
-        return safe_stem(str(row["canonical_id"]).strip())
+        return safe_stem(_normalize_storage_id_value(id_type="canonical", id_value=str(row["canonical_id"]).strip()))
     return str(work_id)

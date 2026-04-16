@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import re
+import shutil
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -18,6 +20,7 @@ from hep_rag_v2.physics import build_physics_substrate
 from hep_rag_v2.results import build_result_objects
 from hep_rag_v2.structure import build_work_structures
 from hep_rag_v2.transfer import build_transfer_candidates
+from hep_rag_v2.pdg import import_pdg_website_source, register_pdg_artifact
 from hep_rag_v2.metadata import (
     canonical_identity,
     first_arxiv_id,
@@ -26,8 +29,13 @@ from hep_rag_v2.metadata import (
     upsert_work_from_hit,
 )
 from hep_rag_v2.providers.inspire import summarize_hit
-from hep_rag_v2.providers.pdg import resolve_pdg_reference, stage_pdg_pdf
-from hep_rag_v2.records import infer_collection_name, paper_storage_stem, parsed_doc_dir
+from hep_rag_v2.providers.pdg import (
+    normalize_pdg_artifact,
+    normalize_pdg_sqlite_variant,
+    resolve_pdg_references,
+    stage_pdg_artifact,
+)
+from hep_rag_v2.records import infer_collection_name, paper_storage_stem, parsed_doc_dir, safe_stem
 
 from hep_rag_v2.online_search import (  # noqa: F401 — re-export
     _search_online_hits,
@@ -493,6 +501,7 @@ def reparse_cached_pdfs(
     collection_name: str | None = None,
     limit: int | None = None,
     work_ids: list[int] | None = None,
+    parser_name: str | None = None,
     replace_existing: bool = False,
     skip_index: bool = False,
     skip_graph: bool = False,
@@ -507,7 +516,12 @@ def reparse_cached_pdfs(
     summary: dict[str, Any] = {
         "workspace_root": str(paths.workspace_root()),
         "collection": collection_payload["name"],
-        "selection": {"limit": limit, "work_ids": list(work_ids or []), "replace_existing": bool(replace_existing)},
+        "selection": {
+            "limit": limit,
+            "work_ids": list(work_ids or []),
+            "parser_name": str(parser_name).strip() or None,
+            "replace_existing": bool(replace_existing),
+        },
         "candidates_seen": 0, "attempted": 0, "materialized": 0, "failed": 0, "skipped": 0, "items": [],
         "search": None, "vectors": None, "graph": None, "thinking": None, "maintenance": None,
     }
@@ -515,7 +529,14 @@ def reparse_cached_pdfs(
     with connect() as conn:
         collection_row = conn.execute("SELECT collection_id FROM collections WHERE name = ?", (collection_payload["name"],)).fetchone()
         collection_id = int(collection_row["collection_id"]) if collection_row is not None else upsert_collection(conn, collection_payload)
-        candidates = _select_reparse_candidates(conn, collection_name=collection_payload["name"], limit=limit, work_ids=work_ids, replace_existing=replace_existing)
+        candidates = _select_reparse_candidates(
+            conn,
+            collection_name=collection_payload["name"],
+            limit=limit,
+            work_ids=work_ids,
+            parser_name=parser_name,
+            replace_existing=replace_existing,
+        )
         summary["candidates_seen"] = len(candidates)
         touched_work_ids: set[int] = set()
         if candidates:
@@ -557,6 +578,8 @@ def import_pdg(
     *,
     edition: str | int,
     collection_name: str | None = None,
+    artifact: str | None = None,
+    source_path: str | Path | None = None,
     pdf_path: str | Path | None = None,
     download: bool = False,
     progress: ProgressCallback = None,
@@ -564,44 +587,344 @@ def import_pdg(
     ensure_db()
     resolved_collection = str(collection_name or (config.get("collection") or {}).get("name") or "pdg").strip() or "pdg"
     workspace = initialize_workspace(config, collection_name=resolved_collection)
-    reference = resolve_pdg_reference(edition=edition)
-    _emit_progress(progress, f"preparing PDG archival import for {reference['canonical_id']}...")
+    pdg_cfg = config.get("pdg") or {}
+    resolved_artifact = normalize_pdg_artifact(str(artifact or pdg_cfg.get("default_artifact") or "full"))
+    resolved_sqlite_variant = normalize_pdg_sqlite_variant(str(pdg_cfg.get("sqlite_variant") or "all"))
+    references = resolve_pdg_references(
+        edition=edition,
+        artifact=resolved_artifact,
+        sqlite_variant=resolved_sqlite_variant,
+    )
+    local_source = source_path or pdf_path
+    if local_source is not None and len(references) != 1:
+        raise ValueError("A local --source/--pdf path can only be used when importing a single PDG artifact.")
 
-    with connect() as conn:
-        collection_payload = runtime_collection_config(config, name=resolved_collection)
-        collection_id = upsert_collection(conn, collection_payload)
-        work_id = _upsert_archival_work(conn, collection_id=collection_id, reference=reference)
-        stem = paper_storage_stem(conn, work_id)
-        output_path = paths.PDF_DIR / resolved_collection / f"{stem}.pdf"
-        pdf = stage_pdg_pdf(reference, output_path=output_path, pdf_path=pdf_path, download=download)
-        document = _upsert_archival_document_record(
-            conn, work_id=work_id, collection_name=resolved_collection, stem=stem, parser_name="pdg", parser_version=str(reference["edition"]),
-            parse_status="pdf_ready" if bool(pdf.get("ok")) else "awaiting_pdf",
-            parse_error=None if bool(pdf.get("ok")) else "PDG PDF not staged yet",
-        )
-
-    return {
+    _emit_progress(progress, f"preparing PDG import for artifact={resolved_artifact}...")
+    summary = {
         "workspace": workspace,
         "collection": workspace["collection"],
-        "reference": reference,
-        "work": {"work_id": work_id, "canonical_source": reference["canonical_source"], "canonical_id": reference["canonical_id"], "title": reference["title"]},
-        "pdf": pdf,
+        "edition": str(edition),
+        "artifact": resolved_artifact,
+        "references": references,
+        "staged_artifacts": [],
+        "website_import": None,
+        "registered_primary_pdfs": [],
+        "registered_embedded_pdfs": None,
+    }
+    with connect() as conn:
+        collection_id = int(workspace["collection"]["collection_id"])
+        for reference in references:
+            artifact_kind = str(reference.get("artifact_kind") or "").strip()
+            output_path = _pdg_artifact_output_path(reference=reference, collection_name=resolved_collection)
+            _emit_progress(progress, f"staging PDG {artifact_kind} artifact {reference['file_name']}...")
+            staged = stage_pdg_artifact(
+                reference,
+                output_path=output_path,
+                source_path=local_source if len(references) == 1 else None,
+                download=download,
+                progress=_prefixed_progress(progress, f"pdg {artifact_kind}"),
+            )
+            registration = register_pdg_artifact(
+                conn,
+                source_id=str(reference["canonical_id"]),
+                artifact_kind=artifact_kind,
+                edition=str(reference.get("edition") or ""),
+                title=str(reference.get("title") or ""),
+                local_path=staged.get("path"),
+                source_url=str(reference.get("download_url") or ""),
+                file_name=str(reference.get("file_name") or output_path.name),
+                metadata={
+                    "state": staged.get("state"),
+                    "landing_url": str(reference.get("landing_url") or ""),
+                    "artifact_kind": artifact_kind,
+                },
+            )
+            item = {
+                "reference": reference,
+                "artifact": staged,
+                "registration": registration,
+            }
+            if artifact_kind == "website" and bool(staged.get("ok")):
+                _emit_progress(progress, "importing PDG website corpus into pdg_sections...")
+                website_import = import_pdg_website_source(
+                    conn,
+                    source_path=staged["path"],
+                    source_id=str(reference["canonical_id"]),
+                    title=str(reference["title"]),
+                    replace=True,
+                    max_capsule_chars=int(pdg_cfg.get("max_capsule_chars") or 1200),
+                    progress=_prefixed_progress(progress, "pdg website"),
+                )
+                item["import"] = website_import
+                summary["website_import"] = website_import
+                if bool(pdg_cfg.get("register_embedded_pdfs", True)):
+                    pdf_registration = _register_pdg_embedded_pdfs_from_website(
+                        conn,
+                        collection_id=collection_id,
+                        collection_name=resolved_collection,
+                        edition=str(reference.get("edition") or edition),
+                        site_root=Path(str(website_import["import_manifest"]["site_root"])),
+                        progress=progress,
+                    )
+                    item["embedded_pdfs"] = pdf_registration
+                    summary["registered_embedded_pdfs"] = pdf_registration
+            elif artifact_kind in {"book_pdf", "booklet_pdf"} and bool(staged.get("ok")):
+                pdf_registration = _register_pdg_primary_pdf_artifact(
+                    conn,
+                    collection_id=collection_id,
+                    collection_name=resolved_collection,
+                    reference=reference,
+                    source_path=Path(str(staged["path"])),
+                    progress=progress,
+                )
+                item["primary_pdf"] = pdf_registration
+                summary["registered_primary_pdfs"].append(pdf_registration)
+            summary["staged_artifacts"].append(item)
+        summary["snapshot"] = _snapshot(conn)
+    return summary
+
+
+def _pdg_artifact_output_path(*, reference: dict[str, Any], collection_name: str) -> Path:
+    artifact_kind = str(reference.get("artifact_kind") or "").strip()
+    file_name = str(reference.get("file_name") or "").strip() or str(reference.get("canonical_id") or "pdg-artifact")
+    return paths.RAW_DIR / "pdg" / artifact_kind / file_name
+
+
+def _register_pdg_primary_pdf_artifact(
+    conn: sqlite3.Connection,
+    *,
+    collection_id: int,
+    collection_name: str,
+    reference: dict[str, Any],
+    source_path: Path,
+    progress: ProgressCallback = None,
+) -> dict[str, Any]:
+    artifact_kind = str(reference.get("artifact_kind") or "").strip() or "pdg_pdf"
+    work_id = _upsert_archival_work(conn, collection_id=collection_id, reference=reference)
+    stem = paper_storage_stem(conn, work_id)
+    output_path = paths.PDF_DIR / collection_name / f"{stem}.pdf"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_source = source_path.expanduser().resolve()
+    if output_path.resolve() != resolved_source:
+        shutil.copy2(resolved_source, output_path)
+    document = _upsert_archival_document_record(
+        conn,
+        work_id=work_id,
+        collection_name=collection_name,
+        stem=stem,
+        parser_name=f"pdg_{artifact_kind}",
+        parser_version=str(reference.get("edition") or ""),
+        parse_status="pdf_ready",
+        parse_error=None,
+    )
+    _emit_progress(progress, f"registered PDG {artifact_kind} parse candidate: work_id={work_id} path={output_path.name}")
+    return {
+        "work_id": work_id,
+        "canonical_id": str(reference.get("canonical_id") or ""),
+        "title": str(reference.get("title") or ""),
+        "artifact_kind": artifact_kind,
+        "path": str(output_path),
         "document": document,
     }
 
 
+def _register_pdg_embedded_pdfs_from_website(
+    conn: sqlite3.Connection,
+    *,
+    collection_id: int,
+    collection_name: str,
+    edition: str,
+    site_root: Path,
+    progress: ProgressCallback = None,
+) -> dict[str, Any]:
+    pdf_candidates: list[Path] = []
+    for pdf_path in sorted(site_root.rglob("*.pdf")):
+        rel_path = pdf_path.relative_to(site_root)
+        if not rel_path.parts or rel_path.parts[0] not in {"reviews", "tables", "listings"}:
+            continue
+        pdf_candidates.append(pdf_path)
+
+    if not pdf_candidates:
+        return {"registered": 0, "categories": {}, "sample": []}
+
+    categories: dict[str, int] = {}
+    sample: list[dict[str, Any]] = []
+    _emit_progress(progress, f"registering {len(pdf_candidates)} embedded PDG PDFs for later parsing...")
+    for index, pdf_path in enumerate(pdf_candidates, start=1):
+        rel_path = pdf_path.relative_to(site_root)
+        category = str(rel_path.parts[0])
+        categories[category] = categories.get(category, 0) + 1
+        reference = _pdg_embedded_pdf_reference(edition=edition, rel_path=rel_path)
+        work_id = _upsert_archival_work(conn, collection_id=collection_id, reference=reference)
+        stem = paper_storage_stem(conn, work_id)
+        output_path = paths.PDF_DIR / collection_name / f"{stem}.pdf"
+        legacy_output_path = _legacy_pdg_embedded_pdf_output_path(collection_name=collection_name, edition=edition, rel_path=rel_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if not output_path.exists():
+            shutil.copy2(pdf_path, output_path)
+        if legacy_output_path != output_path and legacy_output_path.exists():
+            legacy_output_path.unlink(missing_ok=True)
+        document = _upsert_archival_document_record(
+            conn,
+            work_id=work_id,
+            collection_name=collection_name,
+            stem=stem,
+            parser_name="pdg_website_pdf",
+            parser_version=str(edition),
+            parse_status="pdf_ready",
+            parse_error=None,
+        )
+        if len(sample) < 20:
+            sample.append(
+                {
+                    "work_id": work_id,
+                    "canonical_id": reference["canonical_id"],
+                    "title": reference["title"],
+                    "category": category,
+                    "path": str(output_path),
+                    "document": document,
+                }
+            )
+        if index % 100 == 0 or index == len(pdf_candidates):
+            _emit_progress(progress, f"registered embedded PDG PDFs: {index}/{len(pdf_candidates)}")
+    return {
+        "registered": len(pdf_candidates),
+        "categories": categories,
+        "sample": sample,
+    }
+
+
+def _pdg_embedded_pdf_reference(*, edition: str, rel_path: Path) -> dict[str, Any]:
+    rel_posix = rel_path.as_posix()
+    rel_without_suffix = rel_path.with_suffix("").as_posix()
+    stem = safe_stem(rel_without_suffix)
+    category = str(rel_path.parts[0]) if rel_path.parts else "pdg"
+    title = _humanize_pdg_embedded_pdf_title(rel_path)
+    return {
+        "canonical_source": "pdg",
+        "canonical_id": f"pdg-{edition}-{category}-{stem}",
+        "title": title,
+        "year": int(edition),
+        "landing_url": f"https://pdg.lbl.gov/{edition}/{rel_posix}",
+        "pdf_url": f"https://pdg.lbl.gov/{edition}/{rel_posix}",
+        "raw_metadata_json": {
+            "edition": edition,
+            "category": category,
+            "relative_path": rel_posix,
+        },
+    }
+
+
+def _legacy_pdg_embedded_pdf_canonical_id(*, edition: str, rel_path: str, category: str) -> str:
+    return f"pdg-{edition}-{category}-{safe_stem(rel_path)}"
+
+
+def _legacy_pdg_embedded_pdf_output_path(*, collection_name: str, edition: str, rel_path: Path) -> Path:
+    category = str(rel_path.parts[0]) if rel_path.parts else "pdg"
+    legacy_canonical_id = _legacy_pdg_embedded_pdf_canonical_id(
+        edition=edition,
+        rel_path=rel_path.as_posix(),
+        category=category,
+    )
+    return paths.PDF_DIR / collection_name / f"{safe_stem(legacy_canonical_id)}.pdf"
+
+
+def _humanize_pdg_embedded_pdf_title(rel_path: Path) -> str:
+    stem = rel_path.stem
+    stem = re.sub(r"^rpp\d{4}-(rev|tab|sum|qtab|list)-", "", stem)
+    stem = stem.replace("-", " ")
+    title = " ".join(part for part in stem.split() if part)
+    return title.title() or rel_path.name
+
+
 def _upsert_archival_work(conn: sqlite3.Connection, *, collection_id: int, reference: dict[str, Any]) -> int:
-    row = conn.execute("SELECT work_id FROM works WHERE canonical_source = ? AND canonical_id = ?", (reference["canonical_source"], reference["canonical_id"])).fetchone()
-    payload = (reference["canonical_source"], reference["canonical_id"], reference["title"], int(reference.get("year") or 0) or None, str(reference.get("landing_url") or "").strip() or None, str(reference.get("pdf_url") or "").strip() or None, json.dumps(reference, ensure_ascii=False))
-    if row is None:
-        cur = conn.execute("INSERT INTO works (canonical_source, canonical_id, title, year, primary_source_url, primary_pdf_url, raw_metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)", payload)
+    work_id = _find_existing_archival_work_id(conn, reference=reference)
+    payload = (
+        reference["canonical_source"],
+        reference["canonical_id"],
+        reference["title"],
+        int(reference.get("year") or 0) or None,
+        str(reference.get("landing_url") or "").strip() or None,
+        str(reference.get("pdf_url") or "").strip() or None,
+        json.dumps(reference, ensure_ascii=False),
+    )
+    if work_id is None:
+        cur = conn.execute(
+            "INSERT INTO works (canonical_source, canonical_id, title, year, primary_source_url, primary_pdf_url, raw_metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            payload,
+        )
         work_id = int(cur.lastrowid)
     else:
-        work_id = int(row["work_id"])
-        conn.execute("UPDATE works SET title = ?, year = ?, primary_source_url = ?, primary_pdf_url = ?, raw_metadata_json = ?, updated_at = CURRENT_TIMESTAMP WHERE work_id = ?", (reference["title"], int(reference.get("year") or 0) or None, str(reference.get("landing_url") or "").strip() or None, str(reference.get("pdf_url") or "").strip() or None, json.dumps(reference, ensure_ascii=False), work_id))
-    conn.execute("INSERT OR IGNORE INTO work_ids (id_type, id_value, work_id, is_primary) VALUES (?, ?, ?, 1)", ("pdg", str(reference["canonical_id"]), work_id))
+        conn.execute(
+            """
+            UPDATE works
+            SET canonical_source = ?, canonical_id = ?, title = ?, year = ?, primary_source_url = ?, primary_pdf_url = ?, raw_metadata_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE work_id = ?
+            """,
+            (
+                reference["canonical_source"],
+                reference["canonical_id"],
+                reference["title"],
+                int(reference.get("year") or 0) or None,
+                str(reference.get("landing_url") or "").strip() or None,
+                str(reference.get("pdf_url") or "").strip() or None,
+                json.dumps(reference, ensure_ascii=False),
+                work_id,
+            ),
+        )
+    canonical_id = str(reference["canonical_id"])
+    if str(reference.get("canonical_source") or "") == "pdg":
+        conn.execute("DELETE FROM work_ids WHERE work_id = ? AND id_type = 'pdg' AND id_value <> ?", (work_id, canonical_id))
+        conn.execute(
+            "INSERT OR IGNORE INTO work_ids (id_type, id_value, work_id, is_primary) VALUES (?, ?, ?, 1)",
+            ("pdg", canonical_id, work_id),
+        )
+        conn.execute(
+            "UPDATE work_ids SET is_primary = CASE WHEN id_value = ? THEN 1 ELSE 0 END WHERE work_id = ? AND id_type = 'pdg'",
+            (canonical_id, work_id),
+        )
+    else:
+        conn.execute("INSERT OR IGNORE INTO work_ids (id_type, id_value, work_id, is_primary) VALUES (?, ?, ?, 1)", ("pdg", canonical_id, work_id))
     conn.execute("INSERT OR IGNORE INTO collection_works (collection_id, work_id) VALUES (?, ?)", (collection_id, work_id))
     return work_id
+
+
+def _find_existing_archival_work_id(conn: sqlite3.Connection, *, reference: dict[str, Any]) -> int | None:
+    row = conn.execute(
+        "SELECT work_id FROM works WHERE canonical_source = ? AND canonical_id = ?",
+        (reference["canonical_source"], reference["canonical_id"]),
+    ).fetchone()
+    if row is not None:
+        return int(row["work_id"])
+    if str(reference.get("canonical_source") or "") != "pdg":
+        return None
+
+    metadata = reference.get("raw_metadata_json") or {}
+    rel_path = str(metadata.get("relative_path") or "").strip()
+    category = str(metadata.get("category") or "").strip()
+    edition = str(metadata.get("edition") or reference.get("year") or "").strip()
+    legacy_candidates: list[str] = []
+    if rel_path and category and edition:
+        legacy_candidates.append(_legacy_pdg_embedded_pdf_canonical_id(edition=edition, rel_path=rel_path, category=category))
+    for legacy_id in legacy_candidates:
+        row = conn.execute(
+            "SELECT work_id FROM works WHERE canonical_source = 'pdg' AND canonical_id = ?",
+            (legacy_id,),
+        ).fetchone()
+        if row is not None:
+            return int(row["work_id"])
+
+    if not rel_path:
+        return None
+    rows = conn.execute(
+        "SELECT work_id, raw_metadata_json FROM works WHERE canonical_source = 'pdg'"
+    ).fetchall()
+    for candidate in rows:
+        payload = json.loads(str(candidate["raw_metadata_json"] or "{}") or "{}")
+        candidate_meta = payload.get("raw_metadata_json") or {}
+        if str(candidate_meta.get("relative_path") or "").strip() == rel_path:
+            return int(candidate["work_id"])
+    return None
 
 
 def _upsert_archival_document_record(conn: sqlite3.Connection, *, work_id: int, collection_name: str, stem: str, parser_name: str, parser_version: str, parse_status: str, parse_error: str | None) -> dict[str, Any]:
@@ -648,9 +971,18 @@ def _work_title(conn: sqlite3.Connection, work_id: int) -> str | None:
     return str(row["title"]) if row is not None else None
 
 
-def _select_reparse_candidates(conn: sqlite3.Connection, *, collection_name: str, limit: int | None, work_ids: list[int] | None, replace_existing: bool) -> list[dict[str, Any]]:
+def _select_reparse_candidates(
+    conn: sqlite3.Connection,
+    *,
+    collection_name: str,
+    limit: int | None,
+    work_ids: list[int] | None,
+    parser_name: str | None,
+    replace_existing: bool,
+) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT w.work_id, w.title FROM works w JOIN collection_works cw ON cw.work_id = w.work_id JOIN collections c ON c.collection_id = cw.collection_id WHERE c.name = ? ORDER BY w.work_id", (collection_name,)).fetchall()
     requested = {int(item) for item in (work_ids or [])}
+    parser_filter = str(parser_name or "").strip()
     candidates: list[dict[str, Any]] = []
     for row in rows:
         work_id = int(row["work_id"])
@@ -660,11 +992,21 @@ def _select_reparse_candidates(conn: sqlite3.Connection, *, collection_name: str
         if not pdf_path.exists():
             continue
         document_row = _document_row(conn, work_id=work_id)
+        if parser_filter and (document_row is None or str(document_row["parser_name"] or "") != parser_filter):
+            continue
         manifest_path = Path(str(document_row["manifest_path"])).expanduser() if document_row and document_row["manifest_path"] else None
         document_materialized = bool(document_row and str(document_row["parse_status"] or "") == "materialized" and manifest_path is not None and manifest_path.exists())
         if not replace_existing and document_materialized:
             continue
-        candidates.append({"work_id": work_id, "title": str(row["title"]), "pdf_path": str(pdf_path), "parse_status": str(document_row["parse_status"]) if document_row and document_row["parse_status"] else None})
+        candidates.append(
+            {
+                "work_id": work_id,
+                "title": str(row["title"]),
+                "pdf_path": str(pdf_path),
+                "parse_status": str(document_row["parse_status"]) if document_row and document_row["parse_status"] else None,
+                "parser_name": str(document_row["parser_name"]) if document_row and document_row["parser_name"] else None,
+            }
+        )
         if limit is not None and len(candidates) >= max(1, int(limit)):
             break
     return candidates

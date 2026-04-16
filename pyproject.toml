@@ -9,7 +9,9 @@ description = "Config-driven HEP literature graph and retrieval framework"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "beautifulsoup4>=4.12",
   "numpy>=1.26",
+  "pypdf>=5.0",
   "PyYAML>=6.0",
   "requests>=2.31",
 ]

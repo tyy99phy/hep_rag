@@ -127,6 +127,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "api_base": "https://mineru.net/api/v4",
         "api_token": "",
         "model_version": "pipeline",
+        "oversize_strategy": "split",
+        "max_pages_per_pdf": 200,
         "is_ocr": False,
         "enable_formula": True,
         "enable_table": True,
@@ -175,6 +177,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "profile": "default",
         "source_id": "pdg",
         "title": "Particle Data Group",
+        "default_artifact": "full",
+        "sqlite_variant": "all",
+        "register_embedded_pdfs": True,
         "max_capsule_chars": 1200,
     },
     "retrieval": {

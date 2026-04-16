@@ -105,6 +105,7 @@ def cmd_reparse_pdfs(args: argparse.Namespace) -> None:
             collection_name=args.collection,
             limit=args.limit,
             work_ids=args.work_id,
+            parser_name=args.parser_name,
             replace_existing=args.replace_existing,
             skip_index=args.skip_index,
             skip_graph=args.skip_graph,
@@ -125,9 +126,9 @@ def cmd_import_pdg(args: argparse.Namespace) -> None:
             config["workspace"]["root"] = str(paths.workspace_root())
         else:
             _, config = apply_runtime_config(config_path=args.config, workspace_root=args.workspace)
-        if args.source:
+        if args.source and (args.source_id or args.title):
             if not args.source_id or not args.title:
-                raise ValueError("When using --source, both --source-id and --title are required.")
+                raise ValueError("When importing a local parsed PDG source, both --source-id and --title are required.")
             emit_cli_status("importing local PDG parsed source...")
             ensure_db()
             with connect() as conn:
@@ -141,16 +142,18 @@ def cmd_import_pdg(args: argparse.Namespace) -> None:
         else:
             if not args.edition:
                 raise ValueError("Either --source or --edition must be provided for import-pdg.")
-            emit_cli_status("preparing PDG archival import...")
+            emit_cli_status("preparing PDG import...")
             payload = import_pdg(
                 config,
                 edition=args.edition,
                 collection_name=args.collection,
+                artifact=args.artifact,
+                source_path=args.source,
                 pdf_path=args.pdf,
                 download=args.download,
                 progress=emit_cli_status,
             )
-        emit_cli_status("PDG archival import finished.")
+        emit_cli_status("PDG import finished.")
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(payload, ensure_ascii=False, indent=2))

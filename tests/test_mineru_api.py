@@ -128,6 +128,46 @@ class MinerUApiTests(unittest.TestCase):
         self.assertEqual(result.state, "done")
         self.assertEqual(result.full_zip_url, "https://example.com/list-result.zip")
 
+    def test_submit_local_pdf_surfaces_remote_error_message(self) -> None:
+        client = MinerUClient(
+            api_base="https://mineru.net/api/v4",
+            api_token="token",
+        )
+        create_response = mock.Mock()
+        create_response.raise_for_status.return_value = None
+        create_response.json.return_value = {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "batch_id": "batch-failed",
+                "file_urls": ["https://example.com/upload.pdf"],
+            },
+        }
+        poll_response = mock.Mock()
+        poll_response.raise_for_status.return_value = None
+        poll_response.json.return_value = {
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "batch_id": "batch-failed",
+                "extract_result": [
+                    {
+                        "data_id": "paper",
+                        "state": "failed",
+                        "err_msg": "number of pages exceeds limit (200 pages)",
+                    }
+                ],
+            },
+        }
+
+        with (
+            mock.patch("hep_rag_v2.providers.mineru_api.requests.post", return_value=create_response),
+            mock.patch("hep_rag_v2.providers.mineru_api.MinerUClient._upload_binary", return_value=None),
+            mock.patch("hep_rag_v2.providers.mineru_api.requests.get", return_value=poll_response),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "number of pages exceeds limit"):
+                client.submit_local_pdf(Path("paper.pdf"), data_id="paper")
+
     def test_poll_batch_retries_after_request_exception(self) -> None:
         client = MinerUClient(
             api_base="https://mineru.net/api/v4",

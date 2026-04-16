@@ -16,6 +16,7 @@ class MinerUTaskResult:
     data_id: str | None
     state: str
     full_zip_url: str | None
+    error_message: str | None
     raw_payload: dict[str, Any]
 
 
@@ -65,7 +66,10 @@ class MinerUClient:
         self._emit_progress(progress, "upload complete; polling parse status...")
         result = self._poll_batch(batch_id=str(upload_meta["batch_id"]), progress=progress)
         if result.state != "done":
-            raise RuntimeError(f"MinerU parse did not finish successfully: state={result.state}")
+            detail = f"state={result.state}"
+            if result.error_message:
+                detail += f"; error={result.error_message}"
+            raise RuntimeError(f"MinerU parse did not finish successfully: {detail}")
         return result
 
 
@@ -162,9 +166,12 @@ class MinerUClient:
                     or result.state != last_state
                     or now - last_report_at >= report_interval
                 ):
+                    detail = f"batch {batch_id} state={result.state} elapsed={elapsed}s"
+                    if result.error_message and result.state == "failed":
+                        detail += f" error={result.error_message}"
                     self._emit_progress(
                         progress,
-                        f"batch {batch_id} state={result.state} elapsed={elapsed}s",
+                        detail,
                     )
                     last_report_at = now
                 last_state = result.state
@@ -207,6 +214,7 @@ def _extract_result(payload: dict[str, Any]) -> MinerUTaskResult:
             data_id=str(result.get("data_id") or "").strip() or None,
             state=state or "unknown",
             full_zip_url=str(result.get("full_zip_url") or "").strip() or None,
+            error_message=str(result.get("err_msg") or result.get("error_message") or "").strip() or None,
             raw_payload=payload,
         )
     if isinstance(result, list) and result:
@@ -217,6 +225,7 @@ def _extract_result(payload: dict[str, Any]) -> MinerUTaskResult:
             data_id=str(first.get("data_id") or "").strip() or None,
             state=state or "unknown",
             full_zip_url=str(first.get("full_zip_url") or "").strip() or None,
+            error_message=str(first.get("err_msg") or first.get("error_message") or "").strip() or None,
             raw_payload=payload,
         )
 
@@ -227,6 +236,7 @@ def _extract_result(payload: dict[str, Any]) -> MinerUTaskResult:
             data_id=str(data.get("data_id") or "").strip() or None,
             state=state or "unknown",
             full_zip_url=str(data.get("full_zip_url") or "").strip() or None,
+            error_message=str(data.get("err_msg") or data.get("error_message") or "").strip() or None,
             raw_payload=payload,
         )
 
@@ -239,6 +249,7 @@ def _extract_result(payload: dict[str, Any]) -> MinerUTaskResult:
             data_id=str(first.get("data_id") or "").strip() or None,
             state=state or "unknown",
             full_zip_url=str(first.get("full_zip_url") or "").strip() or None,
+            error_message=str(first.get("err_msg") or first.get("error_message") or "").strip() or None,
             raw_payload=payload,
         )
 
