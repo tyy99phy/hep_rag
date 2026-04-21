@@ -73,29 +73,55 @@ pip install -e ".[langchain]"
 # 1. 初始化配置和工作区
 hep-rag init-config --config ./hep-rag.yaml --workspace ./workspace
 
-# 2. 编辑 hep-rag.yaml，填入 MinerU / LLM 凭证（见下方"配置"一节）
+# 2. 编辑 hep-rag.yaml，填入 MinerU / LLM 凭证。
+#    如果你要做语义向量建库，把 profiles.embedding 改成 semantic_small_local
+#    （init-config 生成的默认值是 bootstrap）
 
 # 3. 预览检索结果
 hep-rag fetch-papers "rare decay eta to four muons CMS" \
   --config ./hep-rag.yaml --limit 5
 
-# 4. 一键入库（元数据 + PDF 下载 + MinerU 解析 + structure → downstream extractions + 索引 / 图谱）
+# 4. 入库（元数据 + PDF 下载 + MinerU 解析 + structure → downstream extractions）
+#    ingest/reparse 现在只会写库并把 search/vector/graph 等派生 lane 标记为 dirty
 hep-rag ingest-online "rare decay eta to four muons CMS" \
   --config ./hep-rag.yaml --limit 10 --download-limit 10 --parse-limit 10
 
-# 4b. 导入 PDG 主干语料
+# 4a. 显式同步检索索引（metadata-only 可先只做 works；有 chunk 时建议 all）
+hep-rag sync-search --config ./hep-rag.yaml --target all
+hep-rag sync-vectors --config ./hep-rag.yaml --target all
+
+# 4a-alt. 对 2k metadata + semantic embedding 做单命令 smoke / e2e 基准
+hep-rag smoke-metadata \
+  --config ./hep-rag.yaml \
+  --corpus cms_atlas_2k \
+  --limit 2000 \
+  --embedding-profile semantic_small_local \
+  --queries-file ./docs/smoke_queries.yaml \
+  --build-search \
+  --build-vectors \
+  --export-report ./smoke_report.json
+
+# 4b. 如需 community / ontology / graph expansion，再同步图谱
+hep-rag sync-graph --config ./hep-rag.yaml --target all
+
+# 4c. 导入 PDG 主干语料
 # 默认只走 website 路线：
 #   - 导入 pdg_sections
 #   - 注册 600+ 内嵌 review/listing/table PDFs
 hep-rag import-pdg --config ./hep-rag.yaml --collection pdg --edition 2024 --download
 
-# 4b-alt. 如需同时归档 SQLite（不引入 standalone book PDF）
+# 4c-alt. 如需同时归档 SQLite（不引入 standalone book PDF）
 hep-rag import-pdg --config ./hep-rag.yaml --collection pdg --edition 2024 --artifact full --download
 
-# 4c. 让 PDG website 内嵌 PDF 进入 MinerU / structure 链路
+# 4d. 让 PDG website 内嵌 PDF 进入 MinerU / structure 链路
 hep-rag reparse-pdfs --config ./hep-rag.yaml --collection pdg --limit 4
 
-# 4c-alt. 只解析 website 注册的 PDG PDF，不碰其他 parser
+# 4d-extra. import-pdg / reparse-pdfs 之后同样要显式 sync
+hep-rag sync-search --config ./hep-rag.yaml --target all
+hep-rag sync-vectors --config ./hep-rag.yaml --target all
+hep-rag sync-graph --config ./hep-rag.yaml --target all
+
+# 4d-alt. 只解析 website 注册的 PDG PDF，不碰其他 parser
 hep-rag reparse-pdfs --config ./hep-rag.yaml --collection pdg --parser-name pdg_website_pdf
 
 # 5. 检索（不调用 LLM）
@@ -116,6 +142,9 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 `hep-rag init-config` 会生成默认配置文件，关键字段：
 
 ```yaml
+profiles:
+  embedding: bootstrap              # init-config 默认是轻量 bootstrap；语义建库请切到 semantic_small_local
+
 online:
   max_parallelism: 4                # 在线多 query 检索的最大并行数
 
@@ -155,6 +184,14 @@ api:
   job_max_workers: 2
   job_max_events: 1000
 ```
+
+如果你要跑语义向量路径，请额外安装：
+
+```bash
+pip install -e ".[embeddings]"
+```
+
+然后把 `profiles.embedding` 切到 `semantic_small_local`（或你自己的 sentence-transformers profile）。
 
 ### LLM 后端
 
@@ -259,7 +296,7 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 | `init-config` | 生成默认配置文件和工作区目录 |
 | `init` | 初始化数据库 |
 | `fetch-papers` | 在线搜索 InspireHEP，预览候选论文 |
-| `ingest-online` | 搜索 + 下载 + 解析 + 结构判断 + 下游抽取 + 建索引（全流程） |
+| `ingest-online` | 搜索 + 下载 + 解析 + 结构判断 + 下游抽取，并将 search/vector/graph 等派生 lane 标记为 dirty |
 | `reparse-pdfs` | 仅对本地已有 PDF 重新提交 MinerU，并刷新 structure/results/methods/transfer |
 | `ingest-metadata` | 仅导入元数据（不下载 PDF） |
 | `import-mineru` | 手动导入 MinerU 解析结果 |
@@ -268,12 +305,16 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 | `build-search-index` | 重建 BM25 全文索引 |
 | `build-vector-index` | 重建向量索引 |
 | `build-graph` | 重建图结构边 |
+| `sync-search` | 按 dirty work ids 增量同步 BM25 索引 |
+| `sync-vectors` | 按 dirty work ids 触发向量索引同步（当前仍是目标级 rebuild） |
+| `sync-graph` | 按 dirty work ids 同步图结构，并刷新 community summaries |
 | `search-bm25` | BM25 关键词检索 |
 | `search-vector` | 向量语义检索 |
 | `search-hybrid` | 混合检索（自动路由 work/chunk 级别） |
 | `query` | 检索证据（可消费 structure/works/chunks，不调用 LLM） |
 | `ask` | 检索 + LLM 问答（消费结构化证据外壳） |
 | `benchmark-manifest` | 导出 RAG effect / thinking-engine benchmark manifest |
+| `smoke-metadata` | 运行 metadata ingest + sync + retrieval 的端到端 smoke/e2e harness，并导出 JSON 报告 |
 | `show-document` | 查看论文解析结果 |
 | `audit-document` | 审查解析质量 |
 | `show-graph` | 查看图谱邻居 |

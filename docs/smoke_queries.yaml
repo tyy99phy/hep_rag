@@ -1,0 +1,10 @@
+queries:
+  - query: CMS same-sign WW latest result
+    target: works
+    limit: 8
+  - query: ATLAS Higgs combination
+    target: works
+    limit: 8
+  - query: CMS jet tagging graph neural network
+    target: works
+    limit: 8

@@ -193,6 +193,40 @@ class RagAnswerStrategyTests(unittest.TestCase):
         self.assertEqual(payload["community_map_notes"], [])
         self.assertEqual(len(client.calls), 1)
 
+    def test_ask_returns_insufficient_evidence_without_calling_llm(self) -> None:
+        config = default_config()
+        config["llm"]["enabled"] = True
+        config["llm"]["backend"] = "openai_compatible"
+        config["llm"]["api_base"] = "http://127.0.0.1:9999/v1"
+        config["llm"]["api_key"] = "sk-test"
+        config["llm"]["model"] = "gpt-5.4"
+
+        retrieval_payload = {
+            "query": "CMS SSWW",
+            "collection": "default",
+            "search_scope": {"key": "default", "label": "Default", "collection_name": "default"},
+            "requested_target": "works",
+            "routing": {"target": "works", "graph_expand": 0, "reasons": ["manual_target"]},
+            "model": "sentence-transformers:BAAI/bge-small-en-v1.5",
+            "community_summaries": [],
+            "ontology_summaries": [],
+            "works": [],
+            "evidence_chunks": [],
+        }
+
+        with (
+            mock.patch("hep_rag_v2.rag.retrieve", return_value=retrieval_payload),
+            mock.patch("hep_rag_v2.rag._build_llm_client") as build_client,
+        ):
+            payload = ask(config, query="CMS SSWW", mode="answer")
+
+        build_client.assert_not_called()
+        self.assertEqual(payload["status"], "insufficient_evidence")
+        self.assertEqual(payload["answer_strategy"], "insufficient_evidence")
+        self.assertEqual(payload["community_map_notes"], [])
+        self.assertEqual(payload["evidence"]["works"], [])
+        self.assertEqual(payload["evidence"]["chunks"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

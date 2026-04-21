@@ -23,6 +23,7 @@ from hep_rag_v2.metadata import (
 from hep_rag_v2.pdg import import_pdg_source
 from hep_rag_v2.pipeline import ask, fetch_online_candidates, import_pdg, ingest_online, reparse_cached_pdfs, retrieve
 from hep_rag_v2.search import rebuild_search_indices
+from hep_rag_v2.smoke import run_metadata_smoke
 
 from ._common import (
     INSPIRE_API,
@@ -205,6 +206,37 @@ def cmd_benchmark_manifest(args: argparse.Namespace) -> None:
     manifest_path = write_benchmark_manifest(output_path, model_label=args.model_label)
     payload = build_benchmark_manifest(model_label=args.model_label)
     print(json.dumps({"output": str(manifest_path), **payload}, ensure_ascii=False, indent=2))
+
+
+def cmd_smoke_metadata(args: argparse.Namespace) -> None:
+    try:
+        emit_cli_status("loading config...")
+        _, config = apply_runtime_config(config_path=args.config, workspace_root=args.workspace)
+        emit_cli_status("running metadata smoke harness...")
+        payload = run_metadata_smoke(
+            config,
+            corpus=args.corpus,
+            ingest_query=args.ingest_query,
+            collection_name=args.collection,
+            limit=args.limit,
+            download_limit=args.download_limit,
+            parse_limit=args.parse_limit,
+            max_parallelism=args.max_parallelism,
+            build_search=args.build_search,
+            build_vectors=args.build_vectors,
+            build_graph=args.build_graph,
+            embedding_profile=args.embedding_profile,
+            queries_file=args.queries_file,
+            validation_queries=args.validation_query,
+            query_target=args.query_target,
+            query_limit=args.query_limit,
+            export_report=args.export_report,
+            progress=emit_cli_status,
+        )
+        emit_cli_status("metadata smoke harness finished.")
+    except Exception as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def cmd_ingest_metadata(args: argparse.Namespace) -> None:

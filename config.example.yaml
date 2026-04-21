@@ -4,7 +4,7 @@ modes:
 
 profiles:
   structure: default
-  embedding: semantic_small_local   # 显式 embedding_profile；默认语义建库走本地 embedding
+  embedding: bootstrap              # 与 init-config 一致的轻量默认值；语义建库时切到 semantic_small_local
   pdg: default
 
 workspace:
@@ -23,7 +23,7 @@ collection:
 
 online:
   provider: inspirehep
-  published_only: true
+  published_only: false
   query_suffix: ""
   page_size: 25
   max_parallelism: 4
@@ -75,12 +75,12 @@ mineru:
 embedding:
   model: hash-idf-v1                # 兼容字段；真正使用哪个模型由 profiles.embedding 决定
   dim: 768
-  profile: semantic_small_local
+  profile: bootstrap
   build_after_ingest: true
-  allow_silent_fallback: false      # 推荐保持 false；cuda 不可用时直接失败，不回退 CPU
+  allow_silent_fallback: false
   runtime:
-    device: cuda                    # 单张 3090 友好默认
-    batch_size: 64
+    device: cpu
+    batch_size: 32
     huggingface:
       endpoint: ""                  # 例如 https://hf-mirror.com；为空则走官方源
       cache_dir: ""                 # 可选：例如 ~/.cache/huggingface

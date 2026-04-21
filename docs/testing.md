@@ -36,9 +36,12 @@ pytest -q tests/test_retrieval_adapter.py tests/test_service_api.py tests/test_b
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[api,langchain]"
+pip install -e ".[api,langchain,embeddings]"
 hep-rag init-config --config ./hep-rag.yaml --workspace ./workspace
 ```
+
+如果你要验证 metadata + semantic embedding 路径，请把 `hep-rag.yaml` 里的
+`profiles.embedding` 改成 `semantic_small_local`；`init-config` 生成的默认值是 `bootstrap`。
 
 ### 先预览候选文章
 
@@ -62,8 +65,37 @@ hep-rag ingest-online "same sign WW CMS" \
 
 - 在线检索是否正常
 - 元数据是否成功入库
-- work-level 检索是否可用
+- ingest 是否把 search/vector/graph 等派生 lane 正确标记为 dirty
 - 默认 ingest 路径没有因为结构层接线而退化
+
+metadata-only 导入后，先显式同步索引，再做 query / ask：
+
+```bash
+hep-rag sync-search --config ./hep-rag.yaml --target works
+hep-rag sync-vectors --config ./hep-rag.yaml --target works
+```
+
+如果你后面还要测 community / ontology / graph expansion，再补：
+
+```bash
+hep-rag sync-graph --config ./hep-rag.yaml --target all
+```
+
+如果你要验证“空 workspace → 2k metadata → search/vector ready → retrieval latency”的整条路径，直接跑：
+
+```bash
+hep-rag smoke-metadata \
+  --config ./hep-rag.yaml \
+  --corpus cms_atlas_2k \
+  --limit 2000 \
+  --embedding-profile semantic_small_local \
+  --queries-file ./docs/smoke_queries.yaml \
+  --build-search \
+  --build-vectors \
+  --export-report ./smoke_report.json
+```
+
+输出会给出 ingest / sync-search / sync-vectors / validation queries 的耗时，以及最终 workspace snapshot。
 
 ## 1.5 PDG corpus 导入冒烟
 
@@ -120,7 +152,7 @@ hep-rag ingest-online "same sign WW CMS" \
 
 - PDF 下载
 - MinerU 解析
-- chunk 层索引
+- 解析产物是否把 chunk/search/vector/graph lane 正确标 dirty
 - 结构层在 downstream producers 之前完成
 - 证据 drill-down
 
@@ -131,6 +163,19 @@ hep-rag reparse-pdfs --config ./hep-rag.yaml --collection default
 ```
 
 关注点不是“有没有跑完一个命令”，而是：结构层是否在 reparse 后重新成为结果/方法/迁移三条下游 lane 的共同上游。
+
+无论是 `ingest-online` 还是 `reparse-pdfs`，在做检索/问答前都要显式 sync：
+
+```bash
+hep-rag sync-search --config ./hep-rag.yaml --target all
+hep-rag sync-vectors --config ./hep-rag.yaml --target all
+```
+
+如果测试 graph/community/ontology，再补：
+
+```bash
+hep-rag sync-graph --config ./hep-rag.yaml --target all
+```
 
 ## 3. 导入后检查
 
@@ -145,7 +190,7 @@ hep-rag status --config ./hep-rag.yaml
 - `works`
 - `documents`
 - `chunks`
-- 搜索/向量索引计数
+- 搜索/向量索引计数是否已经在 sync 后更新
 - 结构相关衍生物是否开始可见
 
 ### 只做检索

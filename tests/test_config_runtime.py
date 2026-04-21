@@ -14,6 +14,7 @@ from hep_rag_v2.cli import build_parser
 from hep_rag_v2.config import (
     apply_runtime_config,
     default_config,
+    load_config,
     resolve_embedding_profile,
     resolve_embedding_settings,
     resolve_mode,
@@ -93,6 +94,15 @@ class ConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(config["embedding"]["profile"], "bootstrap")
         self.assertFalse(config["embedding"]["allow_silent_fallback"])
         self.assertEqual(config["embedding_profiles"]["semantic_small_local"]["runtime"]["device"], "cuda")
+
+    def test_config_example_matches_default_bootstrap_profile_defaults(self) -> None:
+        _path, config = load_config(Path(__file__).resolve().parents[1] / "config.example.yaml")
+
+        self.assertFalse(config["online"]["published_only"])
+        self.assertEqual(config["profiles"]["embedding"], "bootstrap")
+        self.assertEqual(config["embedding"]["profile"], "bootstrap")
+        self.assertEqual(resolve_embedding_profile(config)["name"], "bootstrap")
+        self.assertEqual(resolve_embedding_settings(config)["model"], "hash-idf-v1")
 
     def test_resolve_mode_prefers_explicit_mode_blocks(self) -> None:
         config = default_config()
@@ -213,6 +223,82 @@ class ConfigRuntimeTests(unittest.TestCase):
 
 
 class CliRuntimeTests(unittest.TestCase):
+    def test_build_vector_index_parser_leaves_model_unset_without_override(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["build-vector-index"])
+        self.assertIsNone(args.model)
+
+    def test_build_vector_index_uses_config_embedding_profile_when_model_omitted(self) -> None:
+        original = paths.workspace_root()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                workspace_root = tmp_path / "runtime"
+                config_path = tmp_path / "hep-rag.yaml"
+                config = default_config(workspace_root=workspace_root)
+                config["profiles"]["embedding"] = "semantic_small_local"
+                save_config(config, config_path)
+
+                parser = build_parser()
+                args = parser.parse_args(
+                    ["build-vector-index", "--config", str(config_path), "--target", "works"]
+                )
+                buffer = io.StringIO()
+                with (
+                    contextlib.redirect_stdout(buffer),
+                    mock.patch("hep_rag_v2.cli.search.ensure_db"),
+                    mock.patch("hep_rag_v2.cli.search.connect") as connect_mock,
+                    mock.patch(
+                        "hep_rag_v2.cli.search.rebuild_vector_indices",
+                        return_value={"works": 1, "chunks": 0},
+                    ) as rebuild,
+                    mock.patch(
+                        "hep_rag_v2.cli.search.vector_index_counts",
+                        return_value={"work_embeddings": 1, "chunk_embeddings": 0},
+                    ),
+                    mock.patch("hep_rag_v2.cli.search.emit_cli_status"),
+                ):
+                    conn = mock.MagicMock()
+                    connect_mock.return_value.__enter__.return_value = conn
+                    args.func(args)
+
+                self.assertEqual(
+                    rebuild.call_args.kwargs["model"],
+                    "sentence-transformers:BAAI/bge-small-en-v1.5",
+                )
+        finally:
+            paths.set_workspace_root(original)
+
+    def test_sync_vectors_uses_config_embedding_profile_when_model_omitted(self) -> None:
+        original = paths.workspace_root()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                workspace_root = tmp_path / "runtime"
+                config_path = tmp_path / "hep-rag.yaml"
+                config = default_config(workspace_root=workspace_root)
+                config["profiles"]["embedding"] = "semantic_small_local"
+                save_config(config, config_path)
+
+                parser = build_parser()
+                args = parser.parse_args(
+                    ["sync-vectors", "--config", str(config_path), "--target", "works"]
+                )
+                buffer = io.StringIO()
+                with (
+                    contextlib.redirect_stdout(buffer),
+                    mock.patch(
+                        "hep_rag_v2.cli.search._run_sync_job",
+                        return_value={"lane": "vectors", "scope": "dirty"},
+                    ) as run_sync,
+                ):
+                    args.func(args)
+
+                run_sync.assert_called_once()
+                self.assertEqual(args.model, "sentence-transformers:BAAI/bge-small-en-v1.5")
+        finally:
+            paths.set_workspace_root(original)
+
     def test_status_honors_explicit_config_path(self) -> None:
         original = paths.workspace_root()
         try:

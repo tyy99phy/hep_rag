@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 
-from hep_rag_v2.vector import DEFAULT_VECTOR_MODEL
-
 from .ingest import (
     cmd_ask,
     cmd_bootstrap_legacy_corpus,
@@ -13,6 +11,7 @@ from .ingest import (
     cmd_import_pdg,
     cmd_ingest_metadata,
     cmd_ingest_online,
+    cmd_smoke_metadata,
     cmd_query,
     cmd_reparse_pdfs,
     cmd_resolve_citations,
@@ -116,6 +115,27 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--model-label", default="weak-model", help="Model label used in the manifest")
     s.set_defaults(func=cmd_benchmark_manifest)
 
+    s = sub.add_parser("smoke-metadata", help="Run an end-to-end metadata ingest + sync + retrieval smoke harness")
+    s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
+    s.add_argument("--workspace", default=None, help="Override workspace root")
+    s.add_argument("--corpus", choices=["cms_atlas_2k", "cms_2k", "atlas_2k"], default="cms_atlas_2k")
+    s.add_argument("--ingest-query", default=None, help="Override the preset online ingest query")
+    s.add_argument("--collection", default=None, help="Override collection name; defaults to the corpus preset name")
+    s.add_argument("--limit", type=int, default=2000)
+    s.add_argument("--max-parallelism", type=int, default=None, help="Override online query/download parallelism")
+    s.add_argument("--download-limit", type=int, default=0, help="Maximum number of PDFs to download during the smoke run")
+    s.add_argument("--parse-limit", type=int, default=0, help="Maximum number of PDFs to parse during the smoke run")
+    s.add_argument("--embedding-profile", default=None, help="Override profiles.embedding for this smoke run")
+    s.add_argument("--queries-file", default=None, help="YAML/JSON file containing validation queries")
+    s.add_argument("--validation-query", action="append", default=None, help="Additional validation query; may be passed multiple times")
+    s.add_argument("--query-target", choices=["auto", "works", "chunks", "community", "ontology"], default="works")
+    s.add_argument("--query-limit", type=int, default=8, help="Retrieval limit used for validation queries")
+    s.add_argument("--export-report", default=None, help="Write the smoke report JSON to this path")
+    s.add_argument("--build-search", action=argparse.BooleanOptionalAction, default=True, help="Whether to sync BM25 search indexes after ingest")
+    s.add_argument("--build-vectors", action=argparse.BooleanOptionalAction, default=True, help="Whether to sync vector indexes after ingest")
+    s.add_argument("--build-graph", action=argparse.BooleanOptionalAction, default=False, help="Whether to sync graph/community state after ingest")
+    s.set_defaults(func=cmd_smoke_metadata)
+
     s = sub.add_parser("init", help="Initialize local database and directories")
     s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
     s.add_argument("--workspace", default=None, help="Override workspace root")
@@ -178,16 +198,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
     s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["all", "works", "chunks"], default="all")
-    s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
-    s.add_argument("--dim", type=int, default=768)
+    s.add_argument("--model", default=None, help="Override embedding model")
+    s.add_argument("--dim", type=int, default=None, help="Override embedding dimension")
     s.set_defaults(func=cmd_build_vector_index)
 
     s = sub.add_parser("sync-vectors", help="Incrementally sync local vector indices")
     s.add_argument("--config", default=None, help="Path to hep-rag.yaml")
     s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["all", "works", "chunks"], default="all")
-    s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
-    s.add_argument("--dim", type=int, default=768)
+    s.add_argument("--model", default=None, help="Override embedding model")
+    s.add_argument("--dim", type=int, default=None, help="Override embedding dimension")
     s.add_argument("--scope", choices=["all", "dirty"], default="dirty")
     s.add_argument("--collection", default=None)
     s.add_argument("--updated-since", default=None)
@@ -198,7 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["all", "works", "chunks"], default="all")
     s.add_argument("--collection", default=None)
-    s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
+    s.add_argument("--model", default=None, help="Override embedding model")
     s.add_argument("--chroma-dir", default=None)
     s.add_argument("--batch-size", type=int, default=256)
     s.set_defaults(func=cmd_sync_chroma_index)
@@ -210,7 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--target", choices=["works", "chunks"], default="works")
     s.add_argument("--collection", default=None)
     s.add_argument("--limit", type=int, default=20)
-    s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
+    s.add_argument("--model", default=None, help="Override embedding model")
     s.add_argument("--backend", choices=["local", "chroma"], default="local")
     s.add_argument("--chroma-dir", default=None)
     s.set_defaults(func=cmd_search_vector)
@@ -222,7 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--target", choices=["auto", "works", "chunks"], default="auto")
     s.add_argument("--collection", default=None)
     s.add_argument("--limit", type=int, default=20)
-    s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
+    s.add_argument("--model", default=None, help="Override embedding model")
     s.add_argument("--graph-expand", type=int, default=None)
     s.add_argument("--seed-limit", type=int, default=5)
     s.set_defaults(func=cmd_search_hybrid)
@@ -245,7 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--target", choices=["all", "bibliographic-coupling", "co-citation", "similarity"], default="all")
     s.add_argument("--collection", default=None)
     s.add_argument("--min-shared", type=int, default=2)
-    s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
+    s.add_argument("--model", default=None, help="Override embedding model")
     s.add_argument("--top-k", type=int, default=10)
     s.add_argument("--min-score", type=float, default=0.35)
     s.set_defaults(func=cmd_build_graph)
@@ -255,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--workspace", default=None, help="Override workspace root")
     s.add_argument("--target", choices=["all", "bibliographic-coupling", "co-citation", "similarity"], default="all")
     s.add_argument("--min-shared", type=int, default=2)
-    s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
+    s.add_argument("--model", default=None, help="Override embedding model")
     s.add_argument("--top-k", type=int, default=10)
     s.add_argument("--min-score", type=float, default=0.35)
     s.add_argument("--scope", choices=["all", "dirty"], default="dirty")
@@ -272,7 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--edge-kind", choices=["all", "bibliographic-coupling", "co-citation", "similarity"], default="all")
     s.add_argument("--collection", default=None)
     s.add_argument("--limit", type=int, default=20)
-    s.add_argument("--model", default=DEFAULT_VECTOR_MODEL)
+    s.add_argument("--model", default=None, help="Override embedding model")
     s.set_defaults(func=cmd_show_graph)
 
     s = sub.add_parser("import-pdg", help="Import PDG corpus artifacts into the workspace and physics substrate")

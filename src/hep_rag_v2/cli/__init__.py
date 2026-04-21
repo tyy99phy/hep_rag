@@ -35,6 +35,7 @@ from .ingest import (
     cmd_import_pdg,
     cmd_ingest_metadata,
     cmd_ingest_online,
+    cmd_smoke_metadata,
     cmd_query,
     cmd_reparse_pdfs,
     cmd_resolve_citations,
@@ -80,6 +81,7 @@ __all__ = [
     # ingest
     "cmd_fetch_papers",
     "cmd_ingest_online",
+    "cmd_smoke_metadata",
     "cmd_query",
     "cmd_ask",
     "cmd_benchmark_manifest",

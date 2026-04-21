@@ -250,6 +250,29 @@ def ask(
     ontology_summaries = list(retrieval.get("ontology_summaries") or [])
     evidence_ontology = ontology_summaries[: max(2, min(len(ontology_summaries), 4))]
 
+    if not any((evidence_works, evidence_chunks, evidence_community, evidence_ontology)):
+        return {
+            "status": "insufficient_evidence",
+            "query": query,
+            "mode": mode,
+            "collection": retrieval.get("collection"),
+            "search_scope": retrieval.get("search_scope"),
+            "requested_target": retrieval.get("requested_target"),
+            "routing": retrieval.get("routing"),
+            "retrieval_model": retrieval.get("model"),
+            "llm_backend": str(llm_cfg.get("backend") or "openai_compatible"),
+            "llm_model": None,
+            "answer_strategy": "insufficient_evidence",
+            "answer": "Knowledge-base evidence is insufficient to answer this query.",
+            "community_map_notes": [],
+            "evidence": {
+                "works": evidence_works,
+                "chunks": evidence_chunks,
+                "community_summaries": evidence_community,
+                "ontology_summaries": evidence_ontology,
+            },
+        }
+
     client = _build_llm_client(llm_cfg)
     answer_strategy = _resolve_answer_strategy(
         llm_cfg=llm_cfg,
@@ -287,6 +310,7 @@ def ask(
             max_tokens=int(llm_cfg.get("max_tokens") or 1200),
         )
     return {
+        "status": "ok",
         "query": query,
         "mode": mode,
         "collection": retrieval.get("collection"),
