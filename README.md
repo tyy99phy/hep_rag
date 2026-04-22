@@ -299,6 +299,7 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 | `ingest-online` | 搜索 + 下载 + 解析 + 结构判断 + 下游抽取，并将 search/vector/graph 等派生 lane 标记为 dirty |
 | `reparse-pdfs` | 仅对本地已有 PDF 重新提交 MinerU，并刷新 structure/results/methods/transfer |
 | `ingest-metadata` | 仅导入元数据（不下载 PDF） |
+| `resolve-citations` | 回填未解析的引文目标 |
 | `import-mineru` | 手动导入 MinerU 解析结果 |
 | `import-pdg` | 导入 PDG 官方 artifact，并将 website corpus 写入 `pdg_sections` / physics substrate |
 | `enrich-inspire-metadata` | 补全引文、摘要等字段 |
@@ -307,8 +308,10 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 | `build-graph` | 重建图结构边 |
 | `sync-search` | 按 dirty work ids 增量同步 BM25 索引 |
 | `sync-vectors` | 按 dirty work ids 触发向量索引同步（当前仍是目标级 rebuild） |
+| `sync-chroma-index` | 把本地向量索引镜像到可选的 Chroma 向量库 |
 | `sync-graph` | 按 dirty work ids 同步图结构，并刷新 community summaries |
-| `search-bm25` | BM25 关键词检索 |
+| `search-works` | 在元数据图里按标题 / 摘要检索 works |
+| `search-bm25` | BM25 关键词检索（works / chunks / formulas / assets） |
 | `search-vector` | 向量语义检索 |
 | `search-hybrid` | 混合检索（自动路由 work/chunk 级别） |
 | `query` | 检索证据（可消费 structure/works/chunks，不调用 LLM） |
@@ -331,18 +334,41 @@ hep_rag/
 ├── pyproject.toml
 ├── config.example.yaml          # 完整配置模板
 ├── db/schema.sql                # SQLite schema（参考副本）
+├── scripts/                     # 离线 benchmark 脚本
+│   ├── run_rag_effect_benchmark.py
+│   └── run_scale_benchmark.py
 │
 ├── src/hep_rag_v2/
 │   ├── schema.sql               # 打包在内的 schema
 │   ├── config.py                # 配置加载与合并
 │   ├── paths.py                 # 工作区路径管理 (WorkspacePaths)
 │   ├── db.py                    # SQLite 连接与初始化
-│   ├── metadata.py              # InspireHEP 元数据入库
-│   ├── pipeline.py              # 高级工作流（ingest / retrieve / ask）
-│   ├── graph.py                 # 图结构边构建
-│   ├── query.py                 # 查询改写
 │   ├── records.py               # 数据记录类型
+│   ├── object_contracts.py      # 顶层对象合同 / 状态语义
 │   ├── textnorm.py              # 文本归一化 (CJK 分词、LaTeX 清洗)
+│   │
+│   ├── metadata.py              # InspireHEP 元数据入库
+│   ├── online_search.py         # 多 query + family-aware 在线搜索
+│   ├── download.py              # PDF 并行下载
+│   ├── parse.py                 # MinerU 解析编排
+│   ├── pipeline.py              # 高级工作流（ingest / retrieve / ask）
+│   ├── maintenance.py           # dirty lane 同步与维护任务
+│   ├── pdg.py                   # PDG corpus 导入与 substrate 写入
+│   │
+│   ├── structure.py             # 结构化上游判断
+│   ├── results.py               # 结果对象抽取
+│   ├── methods.py               # 方法签名抽取
+│   ├── transfer.py              # 跨论文 transfer 候选
+│   ├── physics.py               # 物理 concept / alias / grounding
+│   ├── ontology.py              # 主题 / 本体抽取
+│   ├── community.py             # 图社区与 community summaries
+│   ├── evidence.py              # 证据外壳组装
+│   ├── rag.py                   # 检索增强问答 strategy
+│   ├── query.py                 # 查询改写
+│   ├── search.py / search_scope.py  # BM25 检索与作用域
+│   ├── retrieval_adapter.py     # 检索结果适配
+│   ├── graph.py                 # 图结构边构建
+│   ├── smoke.py / loadtest.py / benchmark_suite.py  # smoke / 压测 / benchmark
 │   │
 │   ├── fulltext/                # 全文处理
 │   │   ├── parser.py            #   MinerU 输出导入
@@ -364,8 +390,13 @@ hep_rag/
 │   │   └── inspect.py           #   审查 / 展示命令
 │   │
 │   ├── service/                 # 服务层 payload 组装
+│   │   ├── facade.py            #   对外服务门面
+│   │   ├── factory.py           #   服务装配
 │   │   ├── workspace.py         #   工作区状态接口
 │   │   └── inspect.py           #   文档 / 图谱展示接口
+│   │
+│   ├── tools/                   # Tool registry（供 agent / LLM 调用）
+│   │   └── registry.py
 │   │
 │   ├── integrations/            # 外部框架适配
 │   │   └── langchain_adapter.py #   LangChain retriever / chat / tools
@@ -377,27 +408,43 @@ hep_rag/
 │   │
 │   └── providers/               # 外部服务适配
 │       ├── inspire.py           #   InspireHEP API
+│       ├── pdg.py               #   PDG website / SQLite artifact
 │       ├── mineru_api.py        #   MinerU 解析 API
 │       ├── openai_compatible.py #   OpenAI 兼容 LLM
 │       └── local_transformers.py#   本地 HuggingFace 模型
 │
-└── tests/
-    ├── conftest.py              # pytest fixtures
-    ├── test_bootstrap.py        # 入库 / 解析 / 索引 / 图谱集成测试
-    ├── test_config_runtime.py   # 配置加载测试
-    └── test_vector.py           # 向量检索 / 混合路由测试
+└── tests/                       # 27 个集成 / 单元测试
+    ├── conftest.py + fixtures/
+    ├── test_bootstrap.py            # 入库 / 解析 / 索引 / 图谱集成
+    ├── test_object_contracts.py     # 顶层状态合同
+    ├── test_thinking_extraction.py  # structure / results / methods / transfer
+    ├── test_pdg_import_pipeline.py  # PDG website + SQLite
+    ├── test_pdg_structure.py        # PDG substrate 结构
+    ├── test_physics.py / test_ontology.py / test_community.py
+    ├── test_online_search.py / test_work_family.py
+    ├── test_retrieval_adapter.py / test_retrieval_shell.py / test_agent_shell.py
+    ├── test_evidence.py / test_rag_answer_strategy.py
+    ├── test_vector.py / test_incremental_reparse.py
+    ├── test_inspire_provider.py / test_mineru_api.py / test_openai_compatible.py
+    ├── test_langchain_adapter.py / test_service_api.py
+    ├── test_benchmark_suite.py / test_smoke_metadata.py / test_loadtest.py
+    └── test_config_runtime.py
 ```
 
 ## 数据库
 
-主业务 SQLite 数据库是 `workspace/db/hep_rag_v2.db`，WAL 模式，26 张表：
+主业务 SQLite 数据库是 `workspace/db/hep_rag_v2.db`，WAL 模式，54 张表：
 
-- **元数据**: works, work\_ids, authors, collaborations, venues, topics
-- **引文网络**: citations, collection\_works
-- **全文**: documents, document\_sections, blocks, formulas, assets, chunks
-- **图结构**: similarity\_edges, bibliographic\_coupling\_edges, co\_citation\_edges
+- **元数据**: works, work\_ids, authors, work\_authors, collaborations, work\_collaborations, venues, work\_venues, topics, work\_topics, collection\_works
+- **Work family**: work\_families, work\_family\_members （note / preprint / article 版本归并）
+- **引文网络**: citations, similarity\_edges, bibliographic\_coupling\_edges, co\_citation\_edges
+- **全文**: documents, document\_sections, blocks, formulas, assets, chunks, chunk\_topic\_mentions
 - **嵌入**: work\_embeddings, chunk\_embeddings
-- **运行记录**: collections, ingest\_runs, graph\_build\_runs
+- **结构化推理 substrate**: work\_capsules, result\_objects, result\_values, result\_context, method\_objects, method\_signatures, method\_application\_links, transfer\_candidates, transfer\_edges
+- **推理轨迹 / idea**: reasoning\_sessions, reasoning\_steps, reasoning\_artifacts, idea\_candidates, idea\_scores, idea\_evidence\_links
+- **PDG 主干**: pdg\_sources, pdg\_sections
+- **Physics 本体**: physics\_concepts, physics\_aliases, physics\_relations, work\_physics\_groundings, result\_physics\_groundings, chunk\_physics\_groundings
+- **运行记录 / 同步**: collections, ingest\_runs, graph\_build\_runs, dirty\_objects, maintenance\_jobs
 
 API 服务的异步任务状态和事件单独存放在 `workspace/db/hep_rag_api.db`：
 
@@ -423,6 +470,13 @@ workspace/
 ```bash
 pip install pytest
 python -m pytest tests/ -v
+```
+
+离线 benchmark 脚本位于 `scripts/`：
+
+```bash
+python scripts/run_rag_effect_benchmark.py --help
+python scripts/run_scale_benchmark.py --help
 ```
 
 更完整的试用与测试流程见：
