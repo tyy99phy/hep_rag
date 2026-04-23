@@ -30,17 +30,33 @@ PDF 并行下载
     ▼
 MinerU 全文解析 → sections → blocks → chunks
     │
-    ├── BM25 全文索引 (works / chunks / formulas / assets)
-    ├── 向量索引 (hash-idf-v1 / sentence-transformers)
-    ├── 图结构边 (引文、书目耦合、共被引、向量相似度)
-    └── structure 结构化分析层（提取 result / method 签名）
-            │
-            ├── results 抽取（测量值、上限、显著性、排除区间）
-            ├── methods 抽取（profile likelihood、BDT、背景估计等）
-            └── transfer 候选生成（跨论文方法迁移建议）
+    ▼
+thinking-engine（入库后立即执行）
+    ├── structure 结构化分析（提取 result / method 签名，生成 work_capsule）
+    ├── results 抽取（测量值、上限、显著性、排除区间）
+    ├── methods 抽取（profile likelihood、BDT、背景估计等）
+    ├── transfer 候选生成（跨论文方法迁移建议）
+    ├── physics 物理概念 grounding
+    ├── ontology 主题摘要
+    └── community 图社区摘要
+    │
+    ▼
+search / vectors / graph 标记为 dirty（需用户显式 sync）
+    │
+    ├── sync-search  → BM25 全文索引 (works / chunks / formulas / assets)
+    ├── sync-vectors → 向量索引 (hash-idf-v1 / sentence-transformers)
+    └── sync-graph   → 图结构边 (引文、书目耦合、共被引、向量相似度)
+    │
+    ▼
+检索 + 问答（支持多种检索目标）
+    ├── works      按论文级 BM25 + 向量混合检索
+    ├── chunks     按段落级 BM25 + 向量混合检索
+    ├── community  按图社区摘要检索，再展开代表论文
+    ├── ontology   按主题摘要检索，再展开代表论文
+    └── auto       根据 query 特征自动路由
                     │
                     ▼
-            work / chunk 双层混合检索 + LLM 问答
+            证据外壳组装 + LLM 问答（answer / survey / idea 模式）
 ```
 
 ## 安装
