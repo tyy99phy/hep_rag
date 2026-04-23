@@ -1,17 +1,17 @@
 # hep\_rag\_v2
 
-配置驱动的高能物理论文检索与结构化 reasoning substrate。从 InspireHEP 在线检索论文元数据，下载 PDF 并解析全文，构建引用图谱与检索索引，并在当前波次中把 `structure` 作为 `results` / `methods` / `transfer` 的上游判断来源。
+面向高能物理的配置驱动论文检索与推理基底（reasoning substrate）。从 InspireHEP 在线检索论文元数据，下载 PDF 并解析全文，构建引用图谱与全文索引。当前设计中，`structure` 层是 `results` / `methods` / `transfer` 的前置依赖——只有先完成结构化分析，才能进行下游抽取。
 
 ## 测试方法
 
 如果你想快速试用、导入文章或做 benchmark，建议看：
 
 - [`docs/testing.md`](docs/testing.md)
-- [`docs/pdg-work-implementation.md`](docs/pdg-work-implementation.md)（当前 structure-upstream 波次的落地约束、状态语义与验收清单）
+- [`docs/pdg-work-implementation.md`](docs/pdg-work-implementation.md)（当前 structure-upstream 阶段的落地约束、状态语义与验收清单）
 
-## 当前仓库姿态
+## 项目定位
 
-当前仓库不只是“检索 + 问答”工具链，也在收敛为一个 HEP reasoning substrate：只要存在 `structure` 输出，它就是 `results` / `methods` / `transfer` 默认消费的语义来源。当前允许的顶层状态以 [`docs/hep-core-object-contracts.md`](docs/hep-core-object-contracts.md) 为准：`ready` / `partial` / `needs_review` / `failed`；历史兼容值 `review_relaxed` / `needs_attention` 已退出运行时语义。
+本项目不只是论文检索问答工具，也在逐步演进为一个 HEP 推理基底：只要论文有 `structure` 输出，下游的 `results`、`methods`、`transfer` 就默认以此为输入。对象允许的状态为 `ready` / `partial` / `needs_review` / `failed`（旧值 `review_relaxed` / `needs_attention` 已废弃），详见 [`docs/hep-core-object-contracts.md`](docs/hep-core-object-contracts.md)。
 
 ## 架构
 
@@ -19,13 +19,13 @@
 InspireHEP API
     │
     ▼
-多 query 在线检索 + family-aware 合并 / 去重
+多 query 在线检索 + family-aware 合并 / 去重（同一论文的 preprint / article 等版本自动归并）
     │
     ▼
 元数据入库 (works, citations, authors, topics, work families)
     │
     ▼
-PDF 下载 (并行 ThreadPoolExecutor)
+PDF 并行下载
     │
     ▼
 MinerU 全文解析 → sections → blocks → chunks
@@ -33,11 +33,11 @@ MinerU 全文解析 → sections → blocks → chunks
     ├── BM25 全文索引 (works / chunks / formulas / assets)
     ├── 向量索引 (hash-idf-v1 / sentence-transformers)
     ├── 图结构边 (引文、书目耦合、共被引、向量相似度)
-    └── structure 上游判断层
+    └── structure 结构化分析层（提取 result / method 签名）
             │
-            ├── results 抽取
-            ├── methods 抽取
-            └── transfer 候选生成
+            ├── results 抽取（测量值、上限、显著性、排除区间）
+            ├── methods 抽取（profile likelihood、BDT、背景估计等）
+            └── transfer 候选生成（跨论文方法迁移建议）
                     │
                     ▼
             work / chunk 双层混合检索 + LLM 问答
@@ -74,15 +74,16 @@ pip install -e ".[langchain]"
 hep-rag init-config --config ./hep-rag.yaml --workspace ./workspace
 
 # 2. 编辑 hep-rag.yaml，填入 MinerU / LLM 凭证。
-#    如果你要做语义向量建库，把 profiles.embedding 改成 semantic_small_local
-#    （init-config 生成的默认值是 bootstrap）
+#    如果你要做语义向量建库，把 profiles.embedding 切换到 semantic_small_local
+#    （init-config 生成的默认值是 bootstrap，无需 GPU）
 
 # 3. 预览检索结果
 hep-rag fetch-papers "rare decay eta to four muons CMS" \
   --config ./hep-rag.yaml --limit 5
 
-# 4. 入库（元数据 + PDF 下载 + MinerU 解析 + structure → downstream extractions）
-#    ingest/reparse 现在只会写库并把 search/vector/graph 等派生 lane 标记为 dirty
+# 4. 入库（元数据 + PDF 下载 + MinerU 解析 + 结构化分析 + 下游抽取）
+#    ingest/reparse 只负责写库，并将 search / vector / graph 等索引标记为待更新（dirty）
+#    用户需要显式执行 sync 命令来刷新这些索引
 hep-rag ingest-online "rare decay eta to four muons CMS" \
   --config ./hep-rag.yaml --limit 10 --download-limit 10 --parse-limit 10
 
@@ -143,7 +144,7 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 
 ```yaml
 profiles:
-  embedding: bootstrap              # init-config 默认是轻量 bootstrap；语义建库请切到 semantic_small_local
+  embedding: bootstrap              # 默认轻量 bootstrap（无需 GPU）；语义建库请切到 semantic_small_local
 
 online:
   max_parallelism: 4                # 在线多 query 检索的最大并行数
@@ -164,8 +165,8 @@ pdg:
   register_embedded_pdfs: true       # 将 website 内嵌 review/listing/table PDFs 注册为正式 parse candidates
 
 embedding:
-  model: hash-idf-v1                 # 内置无依赖模型，或填 sentence-transformers 模型名
-  allow_silent_fallback: false       # 推荐保持 false；GPU 不可用时直接失败
+  model: hash-idf-v1                 # 内置轻量模型（无需 GPU），或填 sentence-transformers 模型名（需 GPU）
+  allow_silent_fallback: false       # 推荐保持 false；GPU 不可用时直接报错，而非静默回退到 CPU
   runtime:
     device: cuda
     batch_size: 64
@@ -296,7 +297,7 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 | `init-config` | 生成默认配置文件和工作区目录 |
 | `init` | 初始化数据库 |
 | `fetch-papers` | 在线搜索 InspireHEP，预览候选论文 |
-| `ingest-online` | 搜索 + 下载 + 解析 + 结构判断 + 下游抽取，并将 search/vector/graph 等派生 lane 标记为 dirty |
+| `ingest-online` | 搜索 + 下载 + 解析 + 结构化分析 + 下游抽取，并将 search / vector / graph 等索引标记为待更新 |
 | `reparse-pdfs` | 仅对本地已有 PDF 重新提交 MinerU，并刷新 structure/results/methods/transfer |
 | `ingest-metadata` | 仅导入元数据（不下载 PDF） |
 | `resolve-citations` | 回填未解析的引文目标 |
@@ -306,10 +307,10 @@ hep-rag-api --config ./hep-rag.yaml --host 127.0.0.1 --port 8000
 | `build-search-index` | 重建 BM25 全文索引 |
 | `build-vector-index` | 重建向量索引 |
 | `build-graph` | 重建图结构边 |
-| `sync-search` | 按 dirty work ids 增量同步 BM25 索引 |
-| `sync-vectors` | 按 dirty work ids 触发向量索引同步（当前仍是目标级 rebuild） |
+| `sync-search` | 对有变更的 work 增量同步 BM25 索引 |
+| `sync-vectors` | 对有变更的 work 触发向量索引同步（当前仍是目标级 rebuild） |
 | `sync-chroma-index` | 把本地向量索引镜像到可选的 Chroma 向量库 |
-| `sync-graph` | 按 dirty work ids 同步图结构，并刷新 community summaries |
+| `sync-graph` | 对有变更的 work 同步图结构，并刷新 community summaries |
 | `search-works` | 在元数据图里按标题 / 摘要检索 works |
 | `search-bm25` | BM25 关键词检索（works / chunks / formulas / assets） |
 | `search-vector` | 向量语义检索 |
@@ -352,23 +353,25 @@ hep_rag/
 │   ├── download.py              # PDF 并行下载
 │   ├── parse.py                 # MinerU 解析编排
 │   ├── pipeline.py              # 高级工作流（ingest / retrieve / ask）
-│   ├── maintenance.py           # dirty lane 同步与维护任务
+│   ├── maintenance.py           # 索引待更新标记与同步维护任务
 │   ├── pdg.py                   # PDG corpus 导入与 substrate 写入
 │   │
-│   ├── structure.py             # 结构化上游判断
-│   ├── results.py               # 结果对象抽取
-│   ├── methods.py               # 方法签名抽取
-│   ├── transfer.py              # 跨论文 transfer 候选
-│   ├── physics.py               # 物理 concept / alias / grounding
-│   ├── ontology.py              # 主题 / 本体抽取
-│   ├── community.py             # 图社区与 community summaries
+│   ├── structure.py             # 结构化分析（提取 result / method 签名）
+│   ├── results.py               # 物理结果抽取（测量值、上限、显著性等）
+│   ├── methods.py               # 分析方法抽取（profile likelihood、BDT 等）
+│   ├── transfer.py              # 跨论文方法迁移候选
+│   ├── physics.py               # 物理概念、别名与 grounding
+│   ├── ontology.py              # 主题与本体摘要
+│   ├── community.py             # 图社区检测与 community 摘要
 │   ├── evidence.py              # 证据外壳组装
 │   ├── rag.py                   # 检索增强问答 strategy
 │   ├── query.py                 # 查询改写
 │   ├── search.py / search_scope.py  # BM25 检索与作用域
 │   ├── retrieval_adapter.py     # 检索结果适配
 │   ├── graph.py                 # 图结构边构建
-│   ├── smoke.py / loadtest.py / benchmark_suite.py  # smoke / 压测 / benchmark
+│   ├── smoke.py                 # 端到端 smoke 测试 harness
+│   ├── loadtest.py              # 压力测试
+│   ├── benchmark_suite.py       # RAG 效果基准测试
 │   │
 │   ├── fulltext/                # 全文处理
 │   │   ├── parser.py            #   MinerU 输出导入
@@ -417,7 +420,7 @@ hep_rag/
     ├── conftest.py + fixtures/
     ├── test_bootstrap.py            # 入库 / 解析 / 索引 / 图谱集成
     ├── test_object_contracts.py     # 顶层状态合同
-    ├── test_thinking_extraction.py  # structure / results / methods / transfer
+    ├── test_thinking_extraction.py  # 结构化分析 + 下游抽取链路
     ├── test_pdg_import_pipeline.py  # PDG website + SQLite
     ├── test_pdg_structure.py        # PDG substrate 结构
     ├── test_physics.py / test_ontology.py / test_community.py
@@ -440,8 +443,8 @@ hep_rag/
 - **引文网络**: citations, similarity\_edges, bibliographic\_coupling\_edges, co\_citation\_edges
 - **全文**: documents, document\_sections, blocks, formulas, assets, chunks, chunk\_topic\_mentions
 - **嵌入**: work\_embeddings, chunk\_embeddings
-- **结构化推理 substrate**: work\_capsules, result\_objects, result\_values, result\_context, method\_objects, method\_signatures, method\_application\_links, transfer\_candidates, transfer\_edges
-- **推理轨迹 / idea**: reasoning\_sessions, reasoning\_steps, reasoning\_artifacts, idea\_candidates, idea\_scores, idea\_evidence\_links
+- **结构化分析**: work\_capsules, result\_objects, result\_values, result\_context, method\_objects, method\_signatures, method\_application\_links, transfer\_candidates, transfer\_edges
+- **推理轨迹与 idea**: reasoning\_sessions, reasoning\_steps, reasoning\_artifacts, idea\_candidates, idea\_scores, idea\_evidence\_links
 - **PDG 主干**: pdg\_sources, pdg\_sections
 - **Physics 本体**: physics\_concepts, physics\_aliases, physics\_relations, work\_physics\_groundings, result\_physics\_groundings, chunk\_physics\_groundings
 - **运行记录 / 同步**: collections, ingest\_runs, graph\_build\_runs, dirty\_objects, maintenance\_jobs
